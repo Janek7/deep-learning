@@ -1,3 +1,6 @@
 .idea
 assignments/01_introduction/logs
 assignments/01_introduction/mnist.npz
+assignments/02_training_nn/gym_cartpole_model.h5
+assignments/02_training_nn/logs
+assignments/02_training_nn/mnist.npz

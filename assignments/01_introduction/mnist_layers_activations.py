@@ -42,7 +42,7 @@ def main(args: argparse.Namespace) -> float:
     # Create the model
     model = tf.keras.Sequential()
     model.add(tf.keras.layers.Input([MNIST.H, MNIST.W, MNIST.C]))
-    # TODO: Finish the model. Namely add:
+    # : Finish the model. Namely add:
     # - a `tf.keras.layers.Flatten()` layer
     model.add(tf.keras.layers.Flatten())
     # - add `args.hidden_layers` number of fully connected hidden layers
