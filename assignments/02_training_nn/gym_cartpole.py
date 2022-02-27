@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic -
+# Jan Kilic -
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
+
 import argparse
 import datetime
 import os
@@ -55,7 +60,7 @@ parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # If you add more arguments, ReCodEx will keep them with your default values.
 parser.add_argument("--batch_size", default=10, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=1000, type=int, help="Number of epochs.")
+parser.add_argument("--epochs", default=10000, type=int, help="Number of epochs.")
 parser.add_argument("--model", default="gym_cartpole_model.h5", type=str, help="Output model path.")
 
 def main(args: argparse.Namespace) -> Optional[tf.keras.Model]:
@@ -77,22 +82,21 @@ def main(args: argparse.Namespace) -> Optional[tf.keras.Model]:
         data = np.loadtxt("gym_cartpole_data.txt")
         observations, labels = data[:, :-1], data[:, -1].astype(np.int32)
 
-        # TODO: Create the model in the `model` variable. Note that
+        # : Create the model in the `model` variable. Note that
         # the model can perform any of:
         # - binary classification with 1 output and sigmoid activation;
         # - two-class classification with 2 outputs and softmax activation.
         model = tf.keras.Sequential()
         print(observations.shape)
         model.add(tf.keras.layers.Input([observations.shape[1]]))
-        model.add(tf.keras.layers.Dense(64, activation=tf.nn.relu))
-        model.add(tf.keras.layers.Dense(32, activation=tf.nn.relu))
-        model.add(tf.keras.layers.Dense(32, activation=tf.nn.relu))
-        model.add(tf.keras.layers.Dense(1, activation=tf.nn.sigmoid))
+        model.add(tf.keras.layers.Dense(64, activation=tf.nn.tanh))
+        model.add(tf.keras.layers.Dense(64, activation=tf.nn.tanh))
+        model.add(tf.keras.layers.Dense(2, activation=tf.nn.softmax))
 
         # : Prepare the model for training using the `model.compile` method.
         model.compile(
             optimizer=tf.optimizers.Adam(),
-            loss='binary_crossentropy',
+            loss=tf.losses.SparseCategoricalCrossentropy(),
             metrics=[tf.metrics.SparseCategoricalAccuracy("accuracy")],
         )
 
