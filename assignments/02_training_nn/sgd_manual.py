@@ -33,15 +33,16 @@ class Model(tf.Module):
         self._W1 = tf.Variable(tf.random.normal([MNIST.W * MNIST.H * MNIST.C, args.hidden_layer], stddev=0.1, seed=args.seed), trainable=True)
         self._b1 = tf.Variable(tf.zeros([args.hidden_layer]), trainable=True)
 
-        # : Create variables:
+        # (sgd_backpropagation): Create variables:
         # - _W2, which is a trainable Variable of size [args.hidden_layer, MNIST.LABELS],
         #   initialized to `tf.random.normal` value with stddev=0.1 and seed=args.seed,
-        self._W2 = tf.Variable(tf.random.normal([args.hidden_layer, MNIST.LABELS], stddev=0.1, seed=args.seed), trainable=True)
+        self._W2 = tf.Variable(tf.random.normal([args.hidden_layer, MNIST.LABELS], stddev=0.1, seed=args.seed),
+                               trainable=True)
         # - _b2, which is a trainable Variable of size [MNIST.LABELS] initialized to zeros
         self._b2 = tf.Variable(tf.zeros([MNIST.LABELS]), trainable=True)
 
     def predict(self, inputs: tf.Tensor) -> tf.Tensor:
-        # : Define the computation of the network. Notably:
+        # TODO(sgd_backpropagation): Define the computation of the network. Notably:
         # - start by reshaping the inputs to shape [inputs.shape[0], -1].
         #   The -1 is a wildcard which is computed so that the number
         #   of elements before and after the reshape fits.
@@ -54,7 +55,11 @@ class Model(tf.Module):
         hidden2 = hidden @ self._W2 + self._b2
         # - finally apply `tf.nn.softmax` and return the result
         output = tf.nn.softmax(hidden2)
-        return output
+
+        # TODO: In order to support manual gradient computation, you should
+        # return not only the output layer, but also the hidden layer after applying
+        # tf.nn.tanh, and the input layer after reshaping.
+        return inputs, hidden, output
 
     def train_epoch(self, dataset: MNIST.Dataset) -> None:
         for batch in dataset.batches(self._args.batch_size):
@@ -64,32 +69,34 @@ class Model(tf.Module):
             # Size of the batch is `self._args.batch_size`, except for the last, which
             # might be smaller.
 
-            # The tf.GradientTape is used to record all operations inside the with block.
-            with tf.GradientTape() as tape:
-                # : Compute the predicted probabilities of the batch images using `self.predict`
-                probabilities = self.predict(batch["images"])
+            # TODO: Contrary to sgd_backpropagation, the goal here is to compute
+            # the gradient manually, without tf.GradientTape. ReCodEx checks
+            # that `tf.GradientTape` is not used and if it is, your solution does
+            # not pass.
 
-                # : Compute the loss:
-                # - for every batch example, it is the categorical crossentropy of the
-                #   predicted probabilities and gold batch label
-                # - finally, compute the average across the batch examples
-                loss = tf.keras.losses.SparseCategoricalCrossentropy()(batch["labels"], probabilities)
+            # TODO: Compute the input layer, hidden layer and output layer
+            # of the batch images using `self.predict`.
+            input, hidden, output = self.predict(batch["images"])
 
-            # We create a list of all variables. Note that a `tf.Module` automatically
-            # tracks owned variables, so we could also used `self.trainable_variables`
-            # (or even `self.variables`, which is useful for loading/saving).
-            variables = [self._W1, self._b1, self._W2, self._b2]
+            # TODO: Compute the gradient of the loss with respect to all
+            # variables. Note that the loss is computed as:
+            # - for every batch example, it is the categorical crossentropy of the
+            #   predicted probabilities and gold batch label
+            # - finally, the individual batch example losses are averaged
+            #
+            # During the gradient computation, you will need to compute
+            # a so-called outer product
+            #   `C[a, i, j] = A[a, i] * B[a, j]`
+            # which you can for example as
+            #   `A[:, :, tf.newaxis] * B[:, tf.newaxis, :]`
+            # or with
+            #   `tf.einsum("ai,aj->aij", A, B)`
 
-            # : Compute the gradient of the loss with respect to variables using
-            # backpropagation algorithm via `tape.gradient`
-            gradients = tape.gradient(loss, variables)
-
-            for variable, gradient in zip(variables, gradients):
-                # TODO: Perform the SGD update with learning rate `self._args.learning_rate`
-                # for the variable and computed gradient. You can modify
-                # variable value with `variable.assign` or in this case the more
-                # efficient `variable.assign_sub`.
-                variable.assign_sub(self._args.learning_rate * gradient)
+            # TODO(sgd_backpropagation): Perform the SGD update with learning rate `self._args.learning_rate`
+            # for the variable and computed gradient. You can modify
+            # variable value with `variable.assign` or in this case the more
+            # efficient `variable.assign_sub`.
+            ...
 
     def evaluate(self, dataset: MNIST.Dataset) -> float:
         # Compute the accuracy of the model prediction
@@ -131,16 +138,16 @@ def main(args: argparse.Namespace) -> float:
     model = Model(args)
 
     for epoch in range(args.epochs):
-        # : Run the `train_epoch` with `mnist.train` dataset
+        # (sgd_backpropagation): Run the `train_epoch` with `mnist.train` dataset
         model.train_epoch(mnist.train)
 
-        # : Evaluate the dev data using `evaluate` on `mnist.dev` dataset
+        # (sgd_backpropagation): Evaluate the dev data using `evaluate` on `mnist.dev` dataset
         accuracy = model.evaluate(mnist.dev)
         print("Dev accuracy after epoch {} is {:.2f}".format(epoch + 1, 100 * accuracy), flush=True)
         with writer.as_default(step=epoch + 1):
             tf.summary.scalar("dev/accuracy", 100 * accuracy)
 
-    # : Evaluate the test data using `evaluate` on `mnist.test` dataset
+    # TODO(sgd_backpropagation): Evaluate the test data using `evaluate` on `mnist.test` dataset
     accuracy = model.evaluate(mnist.test)
     print("Test accuracy after epoch {} is {:.2f}".format(epoch + 1, 100 * accuracy), flush=True)
     with writer.as_default(step=epoch + 1):
