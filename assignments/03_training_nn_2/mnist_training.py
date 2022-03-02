@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Jan Kilic - 079f5b80-9807-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
+
 import argparse
 import datetime
 import os
@@ -16,11 +21,11 @@ parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
 parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
 parser.add_argument("--decay", default='linear', type=str, help="Learning decay rate type")
-parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
+parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--hidden_layer", default=200, type=int, help="Size of the hidden layer.")
 parser.add_argument("--learning_rate", default=0.01, type=float, help="Initial learning rate.")
 parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
-parser.add_argument("--momentum", default=0.0, type=float, help="Momentum.")
+parser.add_argument("--momentum", default=None, type=float, help="Momentum.")
 parser.add_argument("--optimizer", default="Adam", type=str, help="Optimizer to use.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
@@ -31,8 +36,7 @@ parser.add_argument("--threads", default=1, type=int, help="Maximum number of th
 
 def main(args: argparse.Namespace) -> float:
     # Fix random seeds and threads
-    np.random.seed(args.seed)
-    tf.random.set_seed(args.seed)
+    tf.keras.utils.set_random_seed(args.seed)
     tf.config.threading.set_inter_op_parallelism_threads(args.threads)
     tf.config.threading.set_intra_op_parallelism_threads(args.threads)
 
@@ -41,7 +45,7 @@ def main(args: argparse.Namespace) -> float:
         os.path.basename(globals().get("__file__", "notebook")),
         datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S"),
         ",".join(("{}={}".format(re.sub("(.)[^_]*_?", r"\1", key), value) for key, value in sorted(vars(args).items())))
-    ))
+    ))#[:99]
 
     # Load data
     mnist = MNIST()
@@ -53,7 +57,7 @@ def main(args: argparse.Namespace) -> float:
         tf.keras.layers.Dense(MNIST.LABELS, activation=tf.nn.softmax),
     ])
 
-    # TODO: Use the required `args.optimizer` (either `SGD` or `Adam`).
+    # : Use the required `args.optimizer` (either `SGD` or `Adam`).
     # For `SGD`, `args.momentum` can be specified.
     # - If `args.decay` is not specified, pass the given `args.learning_rate`
     #   directly to the optimizer as a `learning_rate` argument.
@@ -80,20 +84,26 @@ def main(args: argparse.Namespace) -> float:
     if not args.decay:
         learning_rate = args.learning_rate
     else:
-        decay_steps = mnist.train.size / args.batch_size
-        print(decay_steps)
+        decay_steps = (mnist.train.size / args.batch_size) * args.epochs
         if args.decay == 'linear':
             learning_rate = tf.keras.optimizers.schedules.PolynomialDecay(decay_steps=decay_steps,
                                                                           initial_learning_rate=args.learning_rate,
                                                                           end_learning_rate=args.learning_rate_final,
                                                                           power=1.0)
         elif args.decay == 'exponential':
-            learning_rate = tf.optimizers.schedules.ExponentialDecay(decay_steps=decay_steps)
+            decay_rate = args.learning_rate_final / args.learning_rate
+            learning_rate = tf.optimizers.schedules.ExponentialDecay(decay_steps=decay_steps,
+                                                                     decay_rate=decay_rate,
+                                                                     initial_learning_rate=args.learning_rate)
+            # print(learning_rate(decay_steps))
         else:
             raise NotImplementedError("Use only 'linear' or 'exponential' as LR scheduler")
 
     if args.optimizer == 'SGD':
-        optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=args.momentum)
+        if args.momentum:
+            optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=args.momentum)
+        else:
+            optimizer = tf.keras.optimizers.SGD(learning_rate=learning_rate)
     elif args.optimizer == 'Adam':
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     else:
@@ -119,9 +129,8 @@ def main(args: argparse.Namespace) -> float:
         mnist.train.data["images"], mnist.train.data["labels"],
         batch_size=args.batch_size, epochs=args.epochs,
         validation_data=(mnist.dev.data["images"], mnist.dev.data["labels"]),
-        callbacks=[tf.keras.callbacks.LambdaCallback(on_epoch_end=evaluate_test)],
+        callbacks=[tf.keras.callbacks.LambdaCallback(on_epoch_end=evaluate_test), tb_callback],
     )
-    print(model.optimizer.learning_rate(model.optimizer.iterations))
 
     # Return test accuracy for ReCodEx to validate
     return logs.history["val_test_accuracy"][-1]
