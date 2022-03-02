@@ -63,7 +63,7 @@ def main(args: argparse.Namespace) -> float:
     for hidden_layer in args.hidden_layers:
         model.add(tf.keras.layers.Dense(hidden_layer, activation=tf.nn.relu, kernel_regularizer=regularizer))
         model.add(tf.keras.layers.Dropout(rate=args.dropout))
-    model.add(tf.keras.layers.Dense(MNIST.LABELS, activation=tf.nn.softmax))
+    model.add(tf.keras.layers.Dense(MNIST.LABELS, activation=tf.nn.softmax, kernel_regularizer=regularizer))
 
     # : Implement label smoothing.
     # Apply the given smoothing. You will need to change the
@@ -96,7 +96,7 @@ def main(args: argparse.Namespace) -> float:
         mnist.train.data["images"], mnist.train.data["labels"],
         batch_size=args.batch_size, epochs=args.epochs,
         validation_data=(mnist.dev.data["images"], mnist.dev.data["labels"]),
-        callbacks=[tf.keras.callbacks.LambdaCallback(on_epoch_end=evaluate_test)],
+        callbacks=[tf.keras.callbacks.LambdaCallback(on_epoch_end=evaluate_test), tb_callback],
     )
 
     # Return test accuracy for ReCodEx to validate
