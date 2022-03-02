@@ -30,7 +30,7 @@ def main(args: argparse.Namespace) -> float:
     tf.config.threading.set_intra_op_parallelism_threads(args.threads)
 
     # Create logdir name
-    args.logdir = os.path.join("logs", "{}-{}-{}".format(
+    args.logdir = os.path.join("../01_introduction/logs", "{}-{}-{}".format(
         os.path.basename(globals().get("__file__", "notebook")),
         datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S"),
         ",".join(("{}={}".format(re.sub("(.)[^_]*_?", r"\1", key), value) for key, value in sorted(vars(args).items())))

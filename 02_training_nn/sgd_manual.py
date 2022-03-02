@@ -42,7 +42,7 @@ class Model(tf.Module):
         self._b2 = tf.Variable(tf.zeros([MNIST.LABELS]), trainable=True)
 
     def predict(self, inputs: tf.Tensor) -> tf.Tensor:
-        # TODO(sgd_backpropagation): Define the computation of the network. Notably:
+        # (sgd_backpropagation): Define the computation of the network. Notably:
         # - start by reshaping the inputs to shape [inputs.shape[0], -1].
         #   The -1 is a wildcard which is computed so that the number
         #   of elements before and after the reshape fits.
@@ -56,7 +56,7 @@ class Model(tf.Module):
         # - finally apply `tf.nn.softmax` and return the result
         output = tf.nn.softmax(hidden2)
 
-        # TODO: In order to support manual gradient computation, you should
+        # : In order to support manual gradient computation, you should
         # return not only the output layer, but also the hidden layer after applying
         # tf.nn.tanh, and the input layer after reshaping.
         return inputs, hidden, output
@@ -69,12 +69,12 @@ class Model(tf.Module):
             # Size of the batch is `self._args.batch_size`, except for the last, which
             # might be smaller.
 
-            # TODO: Contrary to sgd_backpropagation, the goal here is to compute
+            # : Contrary to sgd_backpropagation, the goal here is to compute
             # the gradient manually, without tf.GradientTape. ReCodEx checks
             # that `tf.GradientTape` is not used and if it is, your solution does
             # not pass.
 
-            # TODO: Compute the input layer, hidden layer and output layer
+            # : Compute the input layer, hidden layer and output layer
             # of the batch images using `self.predict`.
             input, hidden, output = self.predict(batch["images"])
 
@@ -90,7 +90,16 @@ class Model(tf.Module):
             # which you can for example as
             #   `A[:, :, tf.newaxis] * B[:, tf.newaxis, :]`
             # or with
-            #   `tf.einsum("ai,aj->aij", A, B)`
+            #   `tf.einsum("ai,aj->aij", A, B)`  https://www.tensorflow.org/api_docs/python/tf/einsum
+            # https://tariq-hasan.github.io/concepts/deep-learning-gradient-computation/
+            # https://medium.com/unit8-machine-learning-publication/computing-the-jacobian-matrix-of-a-neural-network-in-python-4f162e5db180
+            # https://web.stanford.edu/class/cs224n/readings/gradient-notes.pdf
+            loss = tf.losses.SparseCategoricalCrossentropy(reduction='none')(batch["labels"], output)
+            print(loss)
+
+            delta_1 = tf.math.subtract(output, batch["labels"]).T
+            print(delta_1)
+            print()
 
             # TODO(sgd_backpropagation): Perform the SGD update with learning rate `self._args.learning_rate`
             # for the variable and computed gradient. You can modify
@@ -103,7 +112,7 @@ class Model(tf.Module):
         correct = 0
         for batch in dataset.batches(self._args.batch_size):
             # : Compute the probabilities of the batch images
-            probabilities = self.predict(batch["images"])
+            input, hidden, probabilities = self.predict(batch["images"])
 
             # : Evaluate how many batch examples were predicted
             # correctly and increase `correct` variable accordingly.

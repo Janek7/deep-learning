@@ -85,7 +85,7 @@ class Model(tf.Module):
             gradients = tape.gradient(loss, variables)
 
             for variable, gradient in zip(variables, gradients):
-                # TODO: Perform the SGD update with learning rate `self._args.learning_rate`
+                # : Perform the SGD update with learning rate `self._args.learning_rate`
                 # for the variable and computed gradient. You can modify
                 # variable value with `variable.assign` or in this case the more
                 # efficient `variable.assign_sub`.
