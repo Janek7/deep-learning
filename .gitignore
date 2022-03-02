@@ -1,8 +1,3 @@
 .idea
-01_introduction/logs
-01_introduction/mnist.npz
-02_training_nn/gym_cartpole_model_10000.h5
-02_training_nn/logs
-02_training_nn/mnist.npz
-03_training_nn_2/logs
-03_training_nn_2/mnist.npz
+*logs
+*mnist.npz
