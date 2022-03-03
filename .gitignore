@@ -2,3 +2,7 @@
 *logs
 *mnist.npz
 *zip
+*.ipynb_checkpoints
+*test.py
+*.h5
+*.txt

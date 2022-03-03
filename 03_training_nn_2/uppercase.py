@@ -35,9 +35,7 @@ def main(args: argparse.Namespace) -> None:
 
     # Load data
     uppercase_data = UppercaseData(args.window, args.alphabet_size)
-    train_data = uppercase_data.train.data
-    for i, (window, label) in enumerate(zip(train_data['windows'], train_data['labels'])):
-        print(i, window, [uppercase_data.train.alphabet[i] for i in window], label)
+    print()
 
     # TODO: Implement a suitable model, optionally including regularization, select
     # good hyperparameters and train the model.
