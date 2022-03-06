@@ -1,5 +1,6 @@
 .idea
 *logs
+*logs-u
 *mnist.npz
 *zip
 *.ipynb_checkpoints

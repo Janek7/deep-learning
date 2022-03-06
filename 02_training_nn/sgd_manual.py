@@ -1,8 +1,10 @@
-#!/usr/bin/env python3
+
 # TEAM MEMBERS:
 # Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
-# Jan Kilic - 079f5b80-9807-11ec-986f-f39926f24a9c
 # Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
+
+#PS C:\Users\Antonio\Documents\npfl114\labs\02> set-ExecutionPolicy -ExecutionPolicy remoteSigned -Scope Process
+#PS C:\Users\Antonio\Documents\npfl114\labs\02> .second\scripts\activate
 
 import argparse
 import datetime
@@ -17,9 +19,9 @@ from mnist import MNIST
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
-parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=5, type=int, help="Number of epochs.")
-parser.add_argument("--hidden_layer", default=100, type=int, help="Size of the hidden layer.")
+parser.add_argument("--batch_size", default=64, type=int, help="Batch size.")
+parser.add_argument("--epochs", default=2, type=int, help="Number of epochs.")
+parser.add_argument("--hidden_layer", default=20, type=int, help="Size of the hidden layer.")
 parser.add_argument("--learning_rate", default=0.1, type=float, help="Learning rate.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
@@ -32,80 +34,48 @@ class Model(tf.Module):
 
         self._W1 = tf.Variable(tf.random.normal([MNIST.W * MNIST.H * MNIST.C, args.hidden_layer], stddev=0.1, seed=args.seed), trainable=True)
         self._b1 = tf.Variable(tf.zeros([args.hidden_layer]), trainable=True)
-
-        # (sgd_backpropagation): Create variables:
-        # - _W2, which is a trainable Variable of size [args.hidden_layer, MNIST.LABELS],
-        #   initialized to `tf.random.normal` value with stddev=0.1 and seed=args.seed,
         self._W2 = tf.Variable(tf.random.normal([args.hidden_layer, MNIST.LABELS], stddev=0.1, seed=args.seed),
                                trainable=True)
-        # - _b2, which is a trainable Variable of size [MNIST.LABELS] initialized to zeros
         self._b2 = tf.Variable(tf.zeros([MNIST.LABELS]), trainable=True)
 
     def predict(self, inputs: tf.Tensor) -> tf.Tensor:
-        # (sgd_backpropagation): Define the computation of the network. Notably:
-        # - start by reshaping the inputs to shape [inputs.shape[0], -1].
-        #   The -1 is a wildcard which is computed so that the number
-        #   of elements before and after the reshape fits.
         inputs = tf.reshape(inputs, shape=[inputs.shape[0], -1])
-        # - then multiply the inputs by `self._W1` and then add `self._b1`
         hidden = inputs @ self._W1 + self._b1
-        # - apply `tf.nn.tanh`
         hidden = tf.nn.tanh(hidden)
-        # - multiply the result by `self._W2` and then add `self._b2`
         hidden2 = hidden @ self._W2 + self._b2
-        # - finally apply `tf.nn.softmax` and return the result
         output = tf.nn.softmax(hidden2)
-
-        # : In order to support manual gradient computation, you should
-        # return not only the output layer, but also the hidden layer after applying
-        # tf.nn.tanh, and the input layer after reshaping.
         return inputs, hidden, output
 
+    def not_scarse(self, arr: np.array) -> tf.Tensor:
+        tmp = np.zeros(10, dtype = np.float32)
+        tmp[arr[0]] = 1
+        a = tf.convert_to_tensor([tmp])
+
+        for i in range(1,len(arr)):
+            tmp = np.zeros(10, dtype = np.float32)
+            tmp[arr[i]] = 1
+            a = tf.concat([a, [tmp]], 0)
+        return a
+
     def train_epoch(self, dataset: MNIST.Dataset) -> None:
-        for batch in dataset.batches(self._args.batch_size):
-            # The batch contains
-            # - batch["images"] with shape [?, MNIST.H, MNIST.W, MNIST.C]
-            # - batch["labels"] with shape [?]
-            # Size of the batch is `self._args.batch_size`, except for the last, which
-            # might be smaller.
-
-            # : Contrary to sgd_backpropagation, the goal here is to compute
-            # the gradient manually, without tf.GradientTape. ReCodEx checks
-            # that `tf.GradientTape` is not used and if it is, your solution does
-            # not pass.
-
-            # : Compute the input layer, hidden layer and output layer
-            # of the batch images using `self.predict`.
+        for i, batch in enumerate(dataset.batches(self._args.batch_size)):
             input, hidden, output = self.predict(batch["images"])
+            derivative_loss_yin = tf.math.subtract(output, self.not_scarse(batch["labels"]))
+            derivative_loss_yin_averaged = tf.reduce_mean(derivative_loss_yin, axis=0)
+            derivative_loss_w2 = tf.einsum("ai,aj->aij", hidden, derivative_loss_yin)
+            gradients_w2 = tf.reduce_mean(derivative_loss_w2, axis=0)
+            
+            derivative_loss_b1 = tf.math.multiply(tf.linalg.matmul(derivative_loss_yin, tf.transpose(self._W2)), np.ones(hidden.shape) - hidden**2)
 
-            # TODO: Compute the gradient of the loss with respect to all
-            # variables. Note that the loss is computed as:
-            # - for every batch example, it is the categorical crossentropy of the
-            #   predicted probabilities and gold batch label
-            # - finally, the individual batch example losses are averaged
-            #
-            # During the gradient computation, you will need to compute
-            # a so-called outer product
-            #   `C[a, i, j] = A[a, i] * B[a, j]`
-            # which you can for example as
-            #   `A[:, :, tf.newaxis] * B[:, tf.newaxis, :]`
-            # or with
-            #   `tf.einsum("ai,aj->aij", A, B)`  https://www.tensorflow.org/api_docs/python/tf/einsum
-            # https://tariq-hasan.github.io/concepts/deep-learning-gradient-computation/
-            # https://medium.com/unit8-machine-learning-publication/computing-the-jacobian-matrix-of-a-neural-network-in-python-4f162e5db180
-            # https://web.stanford.edu/class/cs224n/readings/gradient-notes.pdf
-            loss = tf.losses.SparseCategoricalCrossentropy(reduction='none')(batch["labels"], output)
-            print(loss)
+            gradients_b1 = tf.reduce_mean(derivative_loss_b1, axis = 0)
+            derivative_loss_w1 = tf.einsum("ai,aj->aij", input, derivative_loss_b1)
+            gradients_w1 = tf.reduce_mean(derivative_loss_w1, axis = 0)
+            self._W2.assign_sub(self._args.learning_rate * gradients_w2)
+            self._b2.assign_sub(self._args.learning_rate * derivative_loss_yin_averaged)
+            self._b1.assign_sub(self._args.learning_rate * gradients_b1)
+            self._W1.assign_sub(self._args.learning_rate * gradients_w1)
 
-            delta_1 = tf.math.subtract(output, batch["labels"]).T
-            print(delta_1)
-            print()
-
-            # TODO(sgd_backpropagation): Perform the SGD update with learning rate `self._args.learning_rate`
-            # for the variable and computed gradient. You can modify
-            # variable value with `variable.assign` or in this case the more
-            # efficient `variable.assign_sub`.
-            ...
+            # self._W1.assign_sub(self._args.learning_rate * gradients_w1)
 
     def evaluate(self, dataset: MNIST.Dataset) -> float:
         # Compute the accuracy of the model prediction
@@ -156,7 +126,7 @@ def main(args: argparse.Namespace) -> float:
         with writer.as_default(step=epoch + 1):
             tf.summary.scalar("dev/accuracy", 100 * accuracy)
 
-    # TODO(sgd_backpropagation): Evaluate the test data using `evaluate` on `mnist.test` dataset
+    # (sgd_backpropagation): Evaluate the test data using `evaluate` on `mnist.test` dataset
     accuracy = model.evaluate(mnist.test)
     print("Test accuracy after epoch {} is {:.2f}".format(epoch + 1, 100 * accuracy), flush=True)
     with writer.as_default(step=epoch + 1):
