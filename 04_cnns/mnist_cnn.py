@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
 import argparse
 import datetime
 import os
@@ -14,8 +17,8 @@ from mnist import MNIST
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
 parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-parser.add_argument("--cnn", default=None, type=str, help="CNN architecture.")
-parser.add_argument("--epochs", default=5, type=int, help="Number of epochs.")
+parser.add_argument("--cnn", default="C-8-3-5-same,C-8-3-2-valid,F,H-50", type=str, help="CNN architecture.")
+parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
@@ -25,11 +28,36 @@ parser.add_argument("--threads", default=1, type=int, help="Maximum number of th
 # The neural network model
 class Model(tf.keras.Model):
     def __init__(self, args: argparse.Namespace) -> None:
-        # TODO: Create the model. The template uses functional API, but
+        # : Create the model. The template uses functional API, but
         # feel free to use subclassing if you want.
         inputs = tf.keras.layers.Input(shape=[MNIST.H, MNIST.W, MNIST.C])
 
-        # TODO: Add CNN layers specified by `args.cnn`, which contains
+        def extract_layer_strings(cnn_str):
+            # Handle residual blocks special (assumes that no residual block is nested in another residual block)
+            findings = re.findall('R-\[.*]', cnn_str)
+            residual_blocks = []
+            for r in findings:
+                # will leave two ,, behind each other
+                cnn_str = cnn_str.replace(r, '')
+                r = r.replace("R-[", '')
+                r = r.replace("]", '')
+                residual_blocks.append(["R", [l.split("-") for l in r.split(",")]])
+            residual_blocks_used = 0
+
+            # split other layers and create list together with residual blocks
+            layers = []
+            for layer in cnn_str.split(','):
+                if layer != '':
+                    layers.append(layer.split("-"))
+                else:
+                    layers.append(residual_blocks[residual_blocks_used])
+                    residual_blocks_used += 1
+            return layers
+
+        layer_strings = extract_layer_strings(args.cnn)
+        # print(layer_strings)
+
+        # : Add CNN layers specified by `args.cnn`, which contains
         # comma-separated list of the following layers:
         # - `C-filters-kernel_size-stride-padding`: Add a convolutional layer with ReLU
         #   activation and specified number of filters, kernel size, stride and padding.
@@ -49,8 +77,39 @@ class Model(tf.keras.Model):
         # You can assume the resulting network is valid; it is fine to crash if it is not.
         #
         # Produce the results in variable `hidden`.
-        hidden = ...
 
+        # in case of CB: in conv2d with_bias=False
+        # for R block - add input of this block to output of this block
+        # hidden = tf.keras.layers.Flatten()(inputs)
+
+        hidden = inputs
+
+        def create_layers(layers, start_layer):
+            h = start_layer
+            for l in layers:
+                if l[0] == 'C':
+                    h = tf.keras.layers.Conv2D(filters=int(l[1]), kernel_size=int(l[2]), strides=int(l[3]), padding=l[4])(h)
+                elif l[0] == 'CB':
+                    h = tf.keras.layers.Conv2D(filters=int(l[1]), kernel_size=int(l[2]), strides=int(l[3]), padding=l[4], use_bias=False)(h)
+                    h = tf.keras.layers.BatchNormalization()(h)
+                    h = tf.keras.layers.ReLU()(h)
+                elif l[0] == 'M':
+                    h = tf.keras.layers.MaxPooling2D(pool_size=int(l[1]), strides=int(l[2]), padding="valid")(h)
+                elif l[0] == 'R':
+                    hidden_before = h
+                    # call function recursively with layers listed in residual block
+                    h = create_layers(l[1], h)
+                    h = tf.keras.layers.Add()([hidden_before, h])
+                    # h = tf.keras.layers.ReLU()(h)  # TODO: necessary?
+                elif l[0] == 'F':
+                    h = tf.keras.layers.Flatten()(h)
+                elif l[0] == 'H':
+                    h = tf.keras.layers.Dense(units=int(l[1]), activation=tf.nn.relu)(h)
+                elif l[0] == 'D':
+                    h = tf.keras.layers.Dropout(rate=float(l[1]))(h)
+            return h
+
+        hidden = create_layers(layer_strings, hidden)
         # Add the final output layer
         outputs = tf.keras.layers.Dense(MNIST.LABELS, activation=tf.nn.softmax)(hidden)
 
@@ -60,6 +119,7 @@ class Model(tf.keras.Model):
             loss=tf.losses.SparseCategoricalCrossentropy(),
             metrics=[tf.metrics.SparseCategoricalAccuracy(name="accuracy")],
         )
+        # self.summary()
         self.tb_callback = tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1)
 
 
@@ -74,7 +134,7 @@ def main(args: argparse.Namespace) -> Dict[str, float]:
         os.path.basename(globals().get("__file__", "notebook")),
         datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S"),
         ",".join(("{}={}".format(re.sub("(.)[^_]*_?", r"\1", k), v) for k, v in sorted(vars(args).items())))
-    ))
+    ))[:99]
 
     # Load the data
     mnist = MNIST()
