@@ -13,8 +13,8 @@ from mnist import MNIST
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
-parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=5, type=int, help="Number of epochs.")
+parser.add_argument("--batch_size", default=100, type=int, help="Batch size.")
+parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
@@ -30,32 +30,47 @@ class Model(tf.keras.Model):
             tf.keras.layers.Input(shape=[MNIST.H, MNIST.W, MNIST.C]),
         )
 
-        # TODO: The model starts by passing each input image through the same
+        # : The model starts by passing each input image through the same
         # subnetwork (with shared weights), which should perform
         # - convolution with 10 filters, 3x3 kernel size, stride 2, "valid" padding, ReLU activation,
         # - convolution with 20 filters, 3x3 kernel size, stride 2, "valid" padding, ReLU activation,
         # - flattening layer,
         # - fully connected layer with 200 neurons and ReLU activation,
         # obtaining a 200-dimensional feature representation FI of each image.
+        conv_1 = tf.keras.layers.Conv2D(filters=10, kernel_size=3, strides=2, padding="valid", activation=tf.nn.relu)
+        conv_2 = tf.keras.layers.Conv2D(filters=20, kernel_size=3, strides=2, padding="valid", activation=tf.nn.relu)
+        flatten = tf.keras.layers.Flatten()
+        hidden = tf.keras.layers.Dense(units=200, activation=tf.nn.relu)
 
-        # TODO: Using the computed representations, the model should produce four outputs:
+        fi_1 = hidden(flatten(conv_2(conv_1(images[0]))))
+        fi_2 = hidden(flatten(conv_2(conv_1(images[1]))))
+
+        # : Using the computed representations, the model should produce four outputs:
         # - first, compute _direct prediction_ whether the first digit is
         #   greater than the second, by
         #   - concatenating the two 200-dimensional image representations FI,
         #   - processing them using another 200-neuron ReLU dense layer
         #   - computing one output using a dense layer with `tf.nn.sigmoid` activation
+        concat = tf.keras.layers.concatenate([fi_1, fi_2])
+        hidden2 = tf.keras.layers.Dense(units=200, activation=tf.nn.relu)
+        direct_prediction_layer = tf.keras.layers.Dense(units=1, activation=tf.nn.sigmoid)
+        direct_prediction = direct_prediction_layer(hidden2(concat))
         # - then, classify the computed representation FI of the first image using
         #   a densely connected softmax layer into 10 classes;
         # - then, classify the computed representation FI of the second image using
         #   the same connected layer (with shared weights) into 10 classes;
+        classification = tf.keras.layers.Dense(units=10, activation=tf.nn.softmax)
+        digit_1 = classification(fi_1)
+        digit_2 = classification(fi_2)
         # - finally, compute _indirect prediction_ whether the first digit
         #   is greater than second, by comparing the predictions from the above
         #   two outputs.
         outputs = {
-            "direct_prediction": ...,
-            "digit_1": ...,
-            "digit_2": ...,
-            "indirect_prediction": ...,
+            "direct_prediction": direct_prediction,
+            "digit_1": digit_1,
+            "digit_2": digit_2,
+            # axis=1 is necessary for argmax because digit_1 is batch prediction
+            "indirect_prediction": tf.cast(tf.math.argmax(digit_1, axis=1) > tf.math.argmax(digit_2, axis=1), tf.float32)
         }
 
         # Finally, construct the model.
@@ -67,21 +82,21 @@ class Model(tf.keras.Model):
         # the keys of the `outputs` dictionary.
         self.output_names = sorted(outputs.keys())
 
-        # TODO: Train the model by computing appropriate losses of
+        # : Train the model by computing appropriate losses of
         # "direct_prediction", "digit_1", "digit_2". Regarding metrics, compute
         # the accuracy of both the direct and indirect predictions; name both
         # metrics "accuracy" (i.e., pass "accuracy" as the first argument of
         # the metric object).
         self.compile(
             optimizer=tf.keras.optimizers.Adam(),
-            loss={
-                "direct_prediction": ...,
-                "digit_1": ...,
-                "digit_2": ...,
+            loss={  # keys fit to output dict
+                "direct_prediction": tf.keras.losses.BinaryCrossentropy(),
+                "digit_1": tf.keras.losses.SparseCategoricalCrossentropy(),
+                "digit_2": tf.keras.losses.SparseCategoricalCrossentropy(),
             },
             metrics={
-                "direct_prediction": [...],
-                "indirect_prediction": [...],
+                "direct_prediction": [tf.keras.metrics.BinaryAccuracy("accuracy")],
+                "indirect_prediction": [tf.keras.metrics.BinaryAccuracy("accuracy")]
             },
         )
         self.tb_callback = tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1)
@@ -93,20 +108,31 @@ class Model(tf.keras.Model):
         # Start by using the original MNIST data
         dataset = tf.data.Dataset.from_tensor_slices((mnist_dataset.data["images"], mnist_dataset.data["labels"]))
 
-        # TODO: If `training`, shuffle the data with `buffer_size=10000` and `seed=args.seed`
+        # : If `training`, shuffle the data with `buffer_size=10000` and `seed=args.seed`
+        if training:
+            dataset = dataset.shuffle(buffer_size=10000, seed=args.seed)
 
-        # TODO: Combine pairs of examples by creating batches of size 2
+        # : Combine pairs of examples by creating batches of size 2
+        dataset = dataset.batch(2)
 
-        # TODO: Map pairs of images to elements suitable for our model. Notably,
+        # : Map pairs of images to elements suitable for our model. Notably,
         # the elements should be pairs `(input, output)`, with
         # - `input` being a pair of images,
         # - `output` being a dictionary with keys "digit_1", "digit_2", "direct_prediction",
         #   and "indirect_prediction".
         def create_element(images, labels):
-            ...
+            output = {
+                "digit_1": labels[0],
+                "digit_2": labels[1],
+                "direct_prediction": int(labels[0] > labels[1]),
+                "indirect_prediction": int(labels[0] > labels[1])
+            }
+            return (images[0], images[1]), output
+
         dataset = dataset.map(create_element)
 
-        # TODO: Create batches of size `args.batch_size`
+        # : Create batches of size `args.batch_size`
+        dataset = dataset.batch(args.batch_size)
 
         return dataset
 
