@@ -88,7 +88,7 @@ class Model(tf.keras.Model):
             h = start_layer
             for l in layers:
                 if l[0] == 'C':
-                    h = tf.keras.layers.Conv2D(filters=int(l[1]), kernel_size=int(l[2]), strides=int(l[3]), padding=l[4])(h)
+                    h = tf.keras.layers.Conv2D(filters=int(l[1]), kernel_size=int(l[2]), strides=int(l[3]), padding=l[4], activation=tf.nn.relu)(h)
                 elif l[0] == 'CB':
                     h = tf.keras.layers.Conv2D(filters=int(l[1]), kernel_size=int(l[2]), strides=int(l[3]), padding=l[4], use_bias=False)(h)
                     h = tf.keras.layers.BatchNormalization()(h)
@@ -100,7 +100,6 @@ class Model(tf.keras.Model):
                     # call function recursively with layers listed in residual block
                     h = create_layers(l[1], h)
                     h = tf.keras.layers.Add()([hidden_before, h])
-                    # h = tf.keras.layers.ReLU()(h)  # TODO: necessary?
                 elif l[0] == 'F':
                     h = tf.keras.layers.Flatten()(h)
                 elif l[0] == 'H':

@@ -89,12 +89,8 @@ def main(args: argparse.Namespace) -> Tuple[List[float], List[float]]:
         for m in models[0:model+1]:
             m_pred = m.predict(mnist.test.data["images"])
             m_preds.append(m_pred)
-            print(m_pred.shape)
             first_preds.append(m_pred[0][0])
         m_preds_average = np.average(m_preds, axis=0)
-        print("avg shape", m_preds_average.shape)
-        print(sum(first_preds) / len (first_preds))
-        print(m_preds_average[0][0])
         accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
         accuracy.update_state(mnist.test.data["labels"], m_preds_average)
         ensemble_accuracy = accuracy.result().numpy()
