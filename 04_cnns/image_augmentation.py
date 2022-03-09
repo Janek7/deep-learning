@@ -13,8 +13,8 @@ from cifar10 import CIFAR10
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
-parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=5, type=int, help="Number of epochs.")
+parser.add_argument("--batch_size", default=100, type=int, help="Batch size.")
+parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
@@ -58,22 +58,24 @@ def main(args: argparse.Namespace) -> Dict[str, float]:
     )
     tb_callback = tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1)
 
-    # TODO: Create data augmenting `tf.keras.preprocessing.image.ImageDataGenerator`.
+    # : Create data augmenting `tf.keras.preprocessing.image.ImageDataGenerator`.
     # Specify:
     # - rotation range of 20 degrees,
     # - zoom range of 0.2 (20%),
     # - width shift range and height shift range of 0.1 (10%),
     # - allow horizontal flips
-    train_generator = ...
+    train_generator = tf.keras.preprocessing.image.ImageDataGenerator(rotation_range=20, zoom_range=.2,
+                                                                      width_shift_range=.1, height_shift_range=.1,
+                                                                      horizontal_flip=True)
 
-    # TODO: Train using the generator. To augment data, use
+    # : Train using the generator. To augment data, use
     # `train_generator.flow` and specify:
     # - cifar.train.data["images"] as inputs
     # - cifar.train.data["labels"] as target
     # - batch_size of args.batch_size
     # - args.seed as random seed
     logs = model.fit(
-        ...,
+        train_generator.flow(cifar.train.data["images"], cifar.train.data["labels"], batch_size=args.batch_size, seed=args.seed),
         shuffle=False, epochs=args.epochs,
         validation_data=(cifar.dev.data["images"], cifar.dev.data["labels"]),
         callbacks=[tb_callback],

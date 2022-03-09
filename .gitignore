@@ -1,7 +1,7 @@
 .idea
 *logs
 *logs-u
-*mnist.npz
+*.npz
 *zip
 *.ipynb_checkpoints
 *test.py
