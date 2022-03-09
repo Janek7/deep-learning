@@ -13,8 +13,8 @@ from cifar10 import CIFAR10
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
-parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=5, type=int, help="Number of epochs.")
+parser.add_argument("--batch_size", default=100, type=int, help="Batch size.")
+parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
@@ -58,14 +58,14 @@ def main(args: argparse.Namespace) -> Dict[str, float]:
     )
     tb_callback = tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1)
 
-    # TODO: Create `train` and `dev` datasets by using
+    # : Create `train` and `dev` datasets by using
     # `tf.data.Dataset.from_tensor_slices` on cifar.train and cifar.dev.
     # The structure of a single example is inferred from the argument
     # of `from_tensor_slices` -- in our case we want each example to
     # be a pair of `(input_image, target_label)`, so we need to pass
     # a pair `(data["images"], data["labels"])` to `from_tensor_slices`.
-    train = ...
-    dev = ...
+    train = tf.data.Dataset.from_tensor_slices((cifar.train.data["images"], cifar.train.data["labels"]))
+    dev = tf.data.Dataset.from_tensor_slices((cifar.dev.data["images"], cifar.dev.data["labels"]))
 
     # Simple data augmentation
     generator = tf.random.Generator.from_seed(args.seed)
@@ -83,7 +83,7 @@ def main(args: argparse.Namespace) -> Dict[str, float]:
         )
         return image, label
 
-    # TODO: Now prepare the training pipeline.
+    # : Now prepare the training pipeline.
     # - first use `.take(5000)` method to utilize only the first 5000 examples
     # - call `.shuffle(5000, seed=args.seed)` to shuffle the data using
     #   the given seed and a buffer of the size of the whole data
@@ -93,11 +93,11 @@ def main(args: argparse.Namespace) -> Dict[str, float]:
     #   the last call -- it allows the pipeline to run in parallel with
     #   the training process, dynamically adjusting the number of threads
     #   to fully saturate the training process
-    train = ...
+    train = train.take(5000).shuffle(5000, seed=args.seed).map(train_augment).batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
 
-    # TODO: Prepare the `dev` pipeline
+    # : Prepare the `dev` pipeline
     # - just use `.batch(args.batch_size)` to generate batches
-    dev = ...
+    dev = dev.batch(args.batch_size)
 
     # Train
     logs = model.fit(train, epochs=args.epochs, validation_data=dev, callbacks=[tb_callback])
