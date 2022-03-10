@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
+
 import argparse
 import datetime
 import os
@@ -10,7 +14,7 @@ import tensorflow as tf
 
 from uppercase_data import UppercaseData
 
-# TODO: Set reasonable values for the hyperparameters, notably
+# : Set reasonable values for the hyperparameters, notably
 # for `alphabet_size` and `window` and others.
 parser = argparse.ArgumentParser()
 parser.add_argument("--alphabet_size", default=100, type=int, help="If nonzero, limit alphabet to this many most frequent chars.")
