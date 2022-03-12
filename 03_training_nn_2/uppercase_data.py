@@ -142,7 +142,7 @@ class UppercaseData:
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--evaluate", default="C:\\Users\\janek\\Development\\Git\\Prag\\deep-learning-lecture\\03_training_nn_2\\logs-u\\notebook-2022-03-10_082337-as=100,bs=64,d=0.5,e=1,hs=400,l=2,m=uppercase_model.h5,sm=True,s=42,t=1,w=3\\uppercase_test.txt",
+    parser.add_argument("--evaluate", default="C:\\Users\\janek\\Development\\Git\\Prag\\deep-learning-lecture\\03_training_nn_2\\uppercase_antonio\\uppercase_test.txt",
                         type=str, help="Prediction file to evaluate")
     parser.add_argument("--dataset", default="test", type=str, help="Gold dataset to evaluate")
     args = parser.parse_args()
