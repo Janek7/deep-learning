@@ -24,7 +24,7 @@ def main(args: argparse.Namespace) -> None:
 
     # Load EfficientNet=B0
     efficientnet_b0 = efficient_net.pretrained_efficientnet_b0(include_top=True)
-
+    efficientnet_b0.summary()
     for image_path in args.images:
         # Load the file
         with open(image_path, "rb") as image_file:

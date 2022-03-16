@@ -7,3 +7,4 @@
 *test.py
 *.h5
 *.txt
+*.tfrecord
