@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
 import argparse
 import datetime
 import os
@@ -11,20 +14,24 @@ import tensorflow as tf
 from cags_dataset import CAGS
 import efficient_net
 
-# TODO: Define reasonable defaults and optionally more parameters
+# : Define reasonable defaults and optionally more parameters
 parser = argparse.ArgumentParser()
 parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=20, type=int, help="Number of epochs.")
+parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
-parser.add_argument("--fine_tuning", default=True, type=bool, help="Optionally fine tune the efficient net core.")
-parser.add_argument("-- =l2", default=0.000, type=float, help="L2 regularization.")
-parser.add_argument("--label_smoothing", default=0, type=float, help="Label smoothing.")
+parser.add_argument("--fine_tuning", default=False, type=bool, help="Optionally fine tune the efficient net core.")
+parser.add_argument("--l2", default=0.01, type=float, help="L2 regularization.")
+parser.add_argument("--label_smoothing", default=0.0, type=float, help="Label smoothing.")
 parser.add_argument("--decay", default='linear', type=str, help="Learning decay rate type")
 parser.add_argument("--learning_rate", default=0.01, type=float, help="Initial learning rate.")
 parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
 
+# params used for submitted model:
+# --batch_size=50 --epochs=50 --seed=42 --threads=1 --fine_tuning=True --l2=0.01 --label_smoothing=0 --decay=linear --learning_rate=0.001 --learning_rate_final=0.0001
+
 def main(args: argparse.Namespace) -> None:
+    print(args)
     # Fix random seeds and threads
     np.random.seed(args.seed)
     tf.random.set_seed(args.seed)
@@ -44,7 +51,13 @@ def main(args: argparse.Namespace) -> None:
     def prepare_dataset(dataset, training):
         def create_inputs(element):
             return element["image"], element["label"]
+        # def to_categorical(image, label):
+        #     label_categorical = tf.one_hot(label, len(CAGS.LABELS))
+        #     label_categorical = tf.cast(label_categorical, tf.float32)
+        #     return image, label_categorical
         dataset = dataset.map(create_inputs)
+        # if args.label_smoothing:
+        #     dataset = dataset.map(to_categorical)
         if training:
             dataset = dataset.shuffle(len(dataset))
         dataset = dataset.batch(args.batch_size)
@@ -66,6 +79,7 @@ def main(args: argparse.Namespace) -> None:
         regularizer = None
 
     inputs = tf.keras.Input(shape=(CAGS.H, CAGS.W, CAGS.C))
+    # inputs = tf.keras.layers.CategoryEncoding(num_tokens=len(CAGS.LABELS), output_mode="one_hot")(inputs)
     hidden = efficientnet_b0(inputs)
     outputs = tf.keras.layers.Dense(len(CAGS.LABELS), activation=tf.nn.softmax, kernel_regularizer=regularizer)(hidden[0])
     model = tf.keras.models.Model(inputs=inputs, outputs=outputs)
@@ -88,26 +102,29 @@ def main(args: argparse.Namespace) -> None:
             # print(learning_rate(decay_steps))
         else:
             raise NotImplementedError("Use only 'linear' or 'exponential' as LR scheduler")
-    print(learning_rate)
-    # compile and train model
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
-        metrics=[tf.keras.metrics.SparseCategoricalAccuracy(name="accuracy")]
-    )
 
-    # loss = tf.losses.CategoricalCrossentropy(label_smoothing=args.label_smoothing),
-    # metrics = [tf.metrics.CategoricalAccuracy(name="accuracy")],
+    # compile and train model
+    if not args.label_smoothing:
+        loss = tf.keras.losses.SparseCategoricalCrossentropy()
+        metrics = [tf.keras.metrics.SparseCategoricalAccuracy(name="accuracy")]
+    else:
+        loss = tf.losses.CategoricalCrossentropy(label_smoothing=args.label_smoothing)
+        metrics = [tf.metrics.CategoricalAccuracy(name="accuracy")]
+
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate), loss=loss, metrics=metrics)
 
     model.summary()
+    best_checkpoint_path = os.path.join(args.logdir, "cags_classification.ckpt")
     model.fit(
         train, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
         callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
-                   tf.keras.callbacks.ModelCheckpoint(
-                       filepath=os.path.join(args.logdir, "cags_classification.ckpt"),
-                       save_weights_only=False, monitor='val_accuracy', mode='max', save_best_only=True)],
+                   tf.keras.callbacks.ModelCheckpoint(filepath=best_checkpoint_path, save_weights_only=False,
+                                                      monitor='val_accuracy', mode='max', save_best_only=True)],
     )
-    # model.save(os.path.join(args.logdir, 'cags_classification.h5'), include_optimizer=True)
+    print(args)
+
+    # use best checkpoint to make predictions
+    model = tf.keras.models.load_model(best_checkpoint_path)
 
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
