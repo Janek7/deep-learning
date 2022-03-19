@@ -196,6 +196,7 @@ def main(args: argparse.Namespace) -> None:
         loss=tf.keras.losses.BinaryCrossentropy(),
         metrics=[CAGS.MaskIoUMetric(), 'accuracy']
     )
+    # model.summary()
     best_checkpoint_path = os.path.join(args.logdir, "cags_segmentation.ckpt")
     model.fit(train, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
               callbacks=[
@@ -207,12 +208,13 @@ def main(args: argparse.Namespace) -> None:
     print(args)
 
     # use best checkpoint to make predictions
-    model = tf.keras.models.load_model(best_checkpoint_path)
+    model = tf.keras.models.load_model(best_checkpoint_path,
+                                       custom_objects={CAGS.MaskIoUMetric.__name__: CAGS.MaskIoUMetric})
 
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
     with open(os.path.join(args.logdir, "cags_segmentation.txt"), "w", encoding="utf-8") as predictions_file:
-        # TODO: Predict the masks on the test set
+        # : Predict the masks on the test set
         test_masks = model.predict(test)
 
         for mask in test_masks:
@@ -233,6 +235,6 @@ def main(args: argparse.Namespace) -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     args = parser.parse_args([] if "__file__" not in globals() else None)
     main(args)
