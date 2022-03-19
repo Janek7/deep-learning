@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import datetime
+import logging
 import os
 import re
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Report only TF errors by default
+logger = logging.getLogger('Segmentation')
 
 import numpy as np
 import tensorflow as tf
@@ -64,10 +66,11 @@ def main(args: argparse.Namespace) -> None:
     # Load the EfficientNet-B0 model
     efficientnet_b0 = efficient_net.pretrained_efficientnet_b0(include_top=False)
     # efficientnet_b0.summary()
+    logger.debug("Efficient Net Outputs:")
     for x in efficientnet_b0.output:
-        print(x)
+        logger.debug(str(x))
     efficientnet_b0.trainable = args.fine_tuning
-    print("-" * 100)
+    logger.debug("-" * 100)
 
     # : Create the model and train it
 
@@ -78,9 +81,9 @@ def main(args: argparse.Namespace) -> None:
             return input
 
     # Input layer
-    print(' Input layer '.center(40, '*'))
+    logger.debug(' Input layer '.center(40, '*'))
     inputs = tf.keras.Input(shape=(CAGS.H, CAGS.W, CAGS.C))
-    # print("inputs", inputs)
+    logger.debug("inputs " + str(inputs))
     # inputs_conv1 = bn_relu(tf.keras.layers.Conv2D(112, 3, 1, "same")(
     #     inputs))
     # inputs_conv2 = bn_relu(tf.keras.layers.Conv2D(112, 3, 1, "same")(
@@ -89,71 +92,70 @@ def main(args: argparse.Namespace) -> None:
     hidden = efficientnet_b0(inputs)
 
     # L1
-    print(' L1 '.center(40, '*'))
-    layer_7_7_1280 = hidden[1]
-    print("layer_7_7_1280", layer_7_7_1280)
-    conv1_7_7_1280 = bn_relu(
-        tf.keras.layers.Conv2D(1280, 3, 1, "same")(layer_7_7_1280))
-    print("conv1_7_7_1280", conv1_7_7_1280)
+    logger.debug(' L1 '.center(40, '*'))
+    deepest_resolution_layer_7_7_1280 = hidden[1]
+    logger.debug("deepest_resolution_layer_7_7_1280 " + str(deepest_resolution_layer_7_7_1280))
+    conv1_7_7_1280 = bn_relu(tf.keras.layers.Conv2D(1280, 3, 1, "same")(deepest_resolution_layer_7_7_1280))
+    logger.debug("conv1_7_7_1280 " + str(conv1_7_7_1280))
     conv2_7_7_1280 = bn_relu(tf.keras.layers.Conv2D(1280, 3, 1, "same")(conv1_7_7_1280))
-    print("conv2_7_7_1280", conv2_7_7_1280)
+    logger.debug("conv2_7_7_1280 " + str(conv2_7_7_1280))
     trans_14_14_112 = bn_relu(tf.keras.layers.Conv2DTranspose(112, 3, 2, "same")(conv2_7_7_1280))
-    print("trans_14_14_112", trans_14_14_112)
+    logger.debug("trans_14_14_112 " + str(trans_14_14_112))
 
     # L2
-    print(' L2 '.center(40, '*'))
+    logger.debug(' L2 '.center(40, '*'))
     concat_14_14_224 = tf.keras.layers.Concatenate()([hidden[2], trans_14_14_112])
-    print("concat_14_14_224", concat_14_14_224)
+    logger.debug("concat_14_14_224 " + str(concat_14_14_224))
     conv1_14_14_112 = bn_relu(tf.keras.layers.Conv2D(112, 3, 1, "same")(concat_14_14_224))
-    print("conv1_14_14_112", conv1_14_14_112)
+    logger.debug("conv1_14_14_112 " + str(conv1_14_14_112))
     conv2_14_14_112 = bn_relu(tf.keras.layers.Conv2D(112, 3, 1, "same")(conv1_14_14_112))
-    print("conv2_14_14_112", conv2_14_14_112)
+    logger.debug("conv2_14_14_112 " + str(conv2_14_14_112))
     trans_28_28_40 = bn_relu(tf.keras.layers.Conv2DTranspose(40, 3, 2, "same")(conv2_14_14_112))
-    print("trans_28_28_40", trans_28_28_40)
+    logger.debug("trans_28_28_40 " + str(trans_28_28_40))
 
     # L3
-    print(' L3 '.center(40, '*'))
+    logger.debug(' L3 '.center(40, '*'))
     concat_28_28_80 = tf.keras.layers.Concatenate()([hidden[3], trans_28_28_40])
-    print("concat_28_28_80", concat_28_28_80)
+    logger.debug("concat_28_28_80 " + str(concat_28_28_80))
     conv1_28_28_40 = bn_relu(tf.keras.layers.Conv2D(40, 3, 1, "same")(concat_28_28_80))
-    print("conv1_28_28_40", conv1_28_28_40)
+    logger.debug("conv1_28_28_40 " + str(conv1_28_28_40))
     conv2_28_28_40 = bn_relu(tf.keras.layers.Conv2D(40, 3, 1, "same")(conv1_28_28_40))
-    print("conv2_28_28_40", conv2_28_28_40)
+    logger.debug("conv2_28_28_40 " + str(conv2_28_28_40))
     trans_56_56_24 = bn_relu(tf.keras.layers.Conv2DTranspose(24, 3, 2, "same")(conv2_28_28_40))
-    print("trans_56_56_24", trans_56_56_24)
+    logger.debug("trans_56_56_24 " + str(trans_56_56_24))
 
     # L4
-    print(' L4 '.center(40, '*'))
+    logger.debug(' L4 '.center(40, '*'))
     concat_56_56_48 = tf.keras.layers.Concatenate()([hidden[4], trans_56_56_24])
-    print("concat_56_56_48", concat_56_56_48)
+    logger.debug("concat_56_56_48 " + str(concat_56_56_48))
     conv1_56_56_24 = bn_relu(tf.keras.layers.Conv2D(24, 3, 1, "same")(concat_56_56_48))
-    print("conv1_56_56_24", conv1_56_56_24)
+    logger.debug("conv1_56_56_24 " + str(conv1_56_56_24))
     conv2_56_56_24 = bn_relu(tf.keras.layers.Conv2D(24, 3, 1, "same")(conv1_56_56_24))
-    print("conv2_56_56_24", conv2_56_56_24)
+    logger.debug("conv2_56_56_24 " + str(conv2_56_56_24))
     trans_112_112_16 = bn_relu(tf.keras.layers.Conv2DTranspose(16, 3, 2, "same")(conv2_56_56_24))
-    print("trans_112_112_16", trans_112_112_16)
+    logger.debug("trans_112_112_16 " + str(trans_112_112_16))
 
     # L5
-    print(' L5 '.center(40, '*'))
+    logger.debug(' L5 '.center(40, '*'))
     concat_112_112_32 = tf.keras.layers.Concatenate()([hidden[5], trans_112_112_16])
-    print("concat_112_112_32", concat_112_112_32)
+    logger.debug("concat_112_112_32 " + str(concat_112_112_32))
     conv1_112_112_16 = bn_relu(tf.keras.layers.Conv2D(16, 3, 1, "same")(concat_112_112_32))
-    print("conv1_112_112_16", conv1_112_112_16)
+    logger.debug("conv1_112_112_16 " + str(conv1_112_112_16))
     conv2_112_112_3 = bn_relu(tf.keras.layers.Conv2D(8, 3, 1, "same")(conv1_112_112_16))
-    print("conv2_112_112_3", conv2_112_112_3)
+    logger.debug("conv2_112_112_3 " + str(conv2_112_112_3))
     trans_224_224_3 = bn_relu(tf.keras.layers.Conv2DTranspose(3, 3, 2, "same")(conv2_112_112_3))
-    print("trans_224_224_3", trans_224_224_3)
+    logger.debug("trans_224_224_3 " + str(trans_224_224_3))
 
     # Output layer
-    print(' Output Layer '.center(40, '*'))
+    logger.debug(' Output Layer '.center(40, '*'))
     concat_224_224_6 = tf.keras.layers.Concatenate()([inputs, trans_224_224_3])
-    print("concat_224_224_6", concat_224_224_6)
+    logger.debug("concat_224_224_6 " + str(concat_224_224_6))
     conv1_224_224_6 = bn_relu(tf.keras.layers.Conv2D(6, 3, 1, "same")(concat_224_224_6))
-    print("conv1_224_224_6", conv1_224_224_6)
+    logger.debug("conv1_224_224_6 " + str(conv1_224_224_6))
     conv2_224_224_6 = bn_relu(tf.keras.layers.Conv2D(6, 3, 1, "same")(conv1_224_224_6))
-    print("conv2_224_224_6", conv2_224_224_6)
+    logger.debug("conv2_224_224_6 " + str(conv2_224_224_6))
     outputs = tf.keras.layers.Conv2D(1, 1, 1, "same", activation='sigmoid')(conv2_224_224_6)
-    print("outputs", outputs)
+    logger.debug("outputs " + str(outputs))
 
     # compose and train model
     model = tf.keras.models.Model(inputs=inputs, outputs=outputs)
@@ -199,5 +201,6 @@ def main(args: argparse.Namespace) -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
     args = parser.parse_args([] if "__file__" not in globals() else None)
     main(args)
