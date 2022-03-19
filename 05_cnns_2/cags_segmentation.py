@@ -20,8 +20,12 @@ parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
 parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
-parser.add_argument("--fine_tuning", default=True, type=bool, help="Optionally fine tune the efficient net core.")
-parser.add_argument("--batch_norm", default=False, type=bool, help="Batch normalization of conv. layers.")
+parser.add_argument("--fine_tuning", default=False, type=bool, help="Optionally fine tune the efficient net core.")
+parser.add_argument("--batch_norm", default=True, type=bool, help="Batch normalization of conv. layers.")
+parser.add_argument("--l2", default=0.00, type=float, help="L2 regularization.")
+parser.add_argument("--decay", default="None", type=str, help="Learning decay rate type")
+parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial learning rate.")
+parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
 
 
 def main(args: argparse.Namespace) -> None:
@@ -74,11 +78,33 @@ def main(args: argparse.Namespace) -> None:
 
     # : Create the model and train it
 
+    if args.l2:
+        regularizer = tf.keras.regularizers.L2(args.l2)
+    else:
+        regularizer = None
+
     def bn_relu(input):
         if args.batch_norm:
             return tf.keras.layers.ReLU()(tf.keras.layers.BatchNormalization()(input))
         else:
             return input
+
+    if not args.decay or args.decay in ["None", "none"]:
+        learning_rate = args.learning_rate
+    else:
+        decay_steps = (len(train) / args.batch_size) * args.epochs
+        if args.decay == 'linear':
+            learning_rate = tf.keras.optimizers.schedules.PolynomialDecay(decay_steps=decay_steps,
+                                                                          initial_learning_rate=args.learning_rate,
+                                                                          end_learning_rate=args.learning_rate_final,
+                                                                          power=1.0)
+        elif args.decay == 'exponential':
+            decay_rate = args.learning_rate_final / args.learning_rate
+            learning_rate = tf.optimizers.schedules.ExponentialDecay(decay_steps=decay_steps,
+                                                                     decay_rate=decay_rate,
+                                                                     initial_learning_rate=args.learning_rate)
+        else:
+            raise NotImplementedError("Use only 'linear' or 'exponential' as LR scheduler")
 
     # Input layer
     logger.debug(' Input layer '.center(40, '*'))
@@ -95,64 +121,69 @@ def main(args: argparse.Namespace) -> None:
     logger.debug(' L1 '.center(40, '*'))
     deepest_resolution_layer_7_7_1280 = hidden[1]
     logger.debug("deepest_resolution_layer_7_7_1280 " + str(deepest_resolution_layer_7_7_1280))
-    conv1_7_7_1280 = bn_relu(tf.keras.layers.Conv2D(1280, 3, 1, "same")(deepest_resolution_layer_7_7_1280))
+    conv1_7_7_1280 = bn_relu(tf.keras.layers.Conv2D(1280, 3, 1, "same", kernel_regularizer=regularizer)(
+        deepest_resolution_layer_7_7_1280))
     logger.debug("conv1_7_7_1280 " + str(conv1_7_7_1280))
-    conv2_7_7_1280 = bn_relu(tf.keras.layers.Conv2D(1280, 3, 1, "same")(conv1_7_7_1280))
+    conv2_7_7_1280 = bn_relu(tf.keras.layers.Conv2D(1280, 3, 1, "same", kernel_regularizer=regularizer)(conv1_7_7_1280))
     logger.debug("conv2_7_7_1280 " + str(conv2_7_7_1280))
-    trans_14_14_112 = bn_relu(tf.keras.layers.Conv2DTranspose(112, 3, 2, "same")(conv2_7_7_1280))
+    trans_14_14_112 = bn_relu(
+        tf.keras.layers.Conv2DTranspose(112, 3, 2, "same", kernel_regularizer=regularizer)(conv2_7_7_1280))
     logger.debug("trans_14_14_112 " + str(trans_14_14_112))
 
     # L2
     logger.debug(' L2 '.center(40, '*'))
     concat_14_14_224 = tf.keras.layers.Concatenate()([hidden[2], trans_14_14_112])
     logger.debug("concat_14_14_224 " + str(concat_14_14_224))
-    conv1_14_14_112 = bn_relu(tf.keras.layers.Conv2D(112, 3, 1, "same")(concat_14_14_224))
+    conv1_14_14_112 = bn_relu(
+        tf.keras.layers.Conv2D(112, 3, 1, "same", kernel_regularizer=regularizer)(concat_14_14_224))
     logger.debug("conv1_14_14_112 " + str(conv1_14_14_112))
-    conv2_14_14_112 = bn_relu(tf.keras.layers.Conv2D(112, 3, 1, "same")(conv1_14_14_112))
+    conv2_14_14_112 = bn_relu(
+        tf.keras.layers.Conv2D(112, 3, 1, "same", kernel_regularizer=regularizer)(conv1_14_14_112))
     logger.debug("conv2_14_14_112 " + str(conv2_14_14_112))
-    trans_28_28_40 = bn_relu(tf.keras.layers.Conv2DTranspose(40, 3, 2, "same")(conv2_14_14_112))
+    trans_28_28_40 = bn_relu(
+        tf.keras.layers.Conv2DTranspose(40, 3, 2, "same", kernel_regularizer=regularizer)(conv2_14_14_112))
     logger.debug("trans_28_28_40 " + str(trans_28_28_40))
 
     # L3
     logger.debug(' L3 '.center(40, '*'))
     concat_28_28_80 = tf.keras.layers.Concatenate()([hidden[3], trans_28_28_40])
     logger.debug("concat_28_28_80 " + str(concat_28_28_80))
-    conv1_28_28_40 = bn_relu(tf.keras.layers.Conv2D(40, 3, 1, "same")(concat_28_28_80))
+    conv1_28_28_40 = bn_relu(tf.keras.layers.Conv2D(40, 3, 1, "same", kernel_regularizer=regularizer)(concat_28_28_80))
     logger.debug("conv1_28_28_40 " + str(conv1_28_28_40))
-    conv2_28_28_40 = bn_relu(tf.keras.layers.Conv2D(40, 3, 1, "same")(conv1_28_28_40))
+    conv2_28_28_40 = bn_relu(tf.keras.layers.Conv2D(40, 3, 1, "same", kernel_regularizer=regularizer)(conv1_28_28_40))
     logger.debug("conv2_28_28_40 " + str(conv2_28_28_40))
-    trans_56_56_24 = bn_relu(tf.keras.layers.Conv2DTranspose(24, 3, 2, "same")(conv2_28_28_40))
+    trans_56_56_24 = bn_relu(tf.keras.layers.Conv2DTranspose(24, 3, 2, "same", kernel_regularizer=regularizer)(conv2_28_28_40))
     logger.debug("trans_56_56_24 " + str(trans_56_56_24))
 
     # L4
     logger.debug(' L4 '.center(40, '*'))
     concat_56_56_48 = tf.keras.layers.Concatenate()([hidden[4], trans_56_56_24])
     logger.debug("concat_56_56_48 " + str(concat_56_56_48))
-    conv1_56_56_24 = bn_relu(tf.keras.layers.Conv2D(24, 3, 1, "same")(concat_56_56_48))
+    conv1_56_56_24 = bn_relu(tf.keras.layers.Conv2D(24, 3, 1, "same", kernel_regularizer=regularizer)(concat_56_56_48))
     logger.debug("conv1_56_56_24 " + str(conv1_56_56_24))
-    conv2_56_56_24 = bn_relu(tf.keras.layers.Conv2D(24, 3, 1, "same")(conv1_56_56_24))
+    conv2_56_56_24 = bn_relu(tf.keras.layers.Conv2D(24, 3, 1, "same", kernel_regularizer=regularizer)(conv1_56_56_24))
     logger.debug("conv2_56_56_24 " + str(conv2_56_56_24))
-    trans_112_112_16 = bn_relu(tf.keras.layers.Conv2DTranspose(16, 3, 2, "same")(conv2_56_56_24))
+    trans_112_112_16 = bn_relu(tf.keras.layers.Conv2DTranspose(16, 3, 2, "same", kernel_regularizer=regularizer)(conv2_56_56_24))
     logger.debug("trans_112_112_16 " + str(trans_112_112_16))
 
     # L5
     logger.debug(' L5 '.center(40, '*'))
     concat_112_112_32 = tf.keras.layers.Concatenate()([hidden[5], trans_112_112_16])
     logger.debug("concat_112_112_32 " + str(concat_112_112_32))
-    conv1_112_112_16 = bn_relu(tf.keras.layers.Conv2D(16, 3, 1, "same")(concat_112_112_32))
+    conv1_112_112_16 = bn_relu(tf.keras.layers.Conv2D(16, 3, 1, "same", kernel_regularizer=regularizer)(concat_112_112_32))
     logger.debug("conv1_112_112_16 " + str(conv1_112_112_16))
-    conv2_112_112_3 = bn_relu(tf.keras.layers.Conv2D(8, 3, 1, "same")(conv1_112_112_16))
+    conv2_112_112_3 = bn_relu(tf.keras.layers.Conv2D(8, 3, 1, "same", kernel_regularizer=regularizer)(conv1_112_112_16))
     logger.debug("conv2_112_112_3 " + str(conv2_112_112_3))
-    trans_224_224_3 = bn_relu(tf.keras.layers.Conv2DTranspose(3, 3, 2, "same")(conv2_112_112_3))
+    trans_224_224_3 = bn_relu(tf.keras.layers.Conv2DTranspose(3, 3, 2, "same", kernel_regularizer=regularizer)(conv2_112_112_3))
     logger.debug("trans_224_224_3 " + str(trans_224_224_3))
 
     # Output layer
     logger.debug(' Output Layer '.center(40, '*'))
     concat_224_224_6 = tf.keras.layers.Concatenate()([inputs, trans_224_224_3])
     logger.debug("concat_224_224_6 " + str(concat_224_224_6))
-    conv1_224_224_6 = bn_relu(tf.keras.layers.Conv2D(6, 3, 1, "same")(concat_224_224_6))
+    conv1_224_224_6 = bn_relu(tf.keras.layers.Conv2D(6, 3, 1, "same", kernel_regularizer=regularizer)(concat_224_224_6))
     logger.debug("conv1_224_224_6 " + str(conv1_224_224_6))
-    conv2_224_224_6 = bn_relu(tf.keras.layers.Conv2D(6, 3, 1, "same")(conv1_224_224_6))
+    conv2_224_224_6 = bn_relu(tf.keras.layers.Conv2D(6, 3, 1, "same", kernel_regularizer=regularizer)(conv1_224_224_6))
     logger.debug("conv2_224_224_6 " + str(conv2_224_224_6))
     outputs = tf.keras.layers.Conv2D(1, 1, 1, "same", activation='sigmoid')(conv2_224_224_6)
     logger.debug("outputs " + str(outputs))
@@ -160,16 +191,17 @@ def main(args: argparse.Namespace) -> None:
     # compose and train model
     model = tf.keras.models.Model(inputs=inputs, outputs=outputs)
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
         # loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
         loss=tf.keras.losses.BinaryCrossentropy(),
         metrics=[CAGS.MaskIoUMetric(), 'accuracy']
     )
     best_checkpoint_path = os.path.join(args.logdir, "cags_segmentation.ckpt")
     model.fit(train, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
-              callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
-                         tf.keras.callbacks.ModelCheckpoint(filepath=best_checkpoint_path, save_weights_only=False,
-                                                            monitor='val_accuracy', mode='max', save_best_only=True)]
+              callbacks=[
+                  tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
+                  tf.keras.callbacks.ModelCheckpoint(filepath=best_checkpoint_path, save_weights_only=False,
+                                                     monitor='val_accuracy', mode='max', save_best_only=True)]
               )
     # exit()
     print(args)
