@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
 import argparse
 import datetime
 import logging
@@ -14,12 +17,13 @@ import tensorflow as tf
 from cags_dataset import CAGS
 import efficient_net
 
-# TODO: Define reasonable defaults and optionally more parameters
+# : Define reasonable defaults and optionally more parameters
 parser = argparse.ArgumentParser()
 parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
+parser.add_argument("--epochs", default=20, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
+parser.add_argument("--logging_level", default="warning", type=str, help="Logging level")
 parser.add_argument("--fine_tuning", default=False, type=bool, help="Optionally fine tune the efficient net core.")
 parser.add_argument("--batch_norm", default=True, type=bool, help="Batch normalization of conv. layers.")
 parser.add_argument("--l2", default=0.00, type=float, help="L2 regularization.")
@@ -27,6 +31,8 @@ parser.add_argument("--decay", default="None", type=str, help="Learning decay ra
 parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial learning rate.")
 parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
 
+# Params used for best model:
+# cags_segmentation.py-2022-03-19_174704-bn=True,bs=50,d=None,e=50,ft=True,l=0.0,lr=0.001,lrf=0.0001,ll=warning,s=42,t=1
 
 def main(args: argparse.Namespace) -> None:
     print(args)
@@ -53,8 +59,7 @@ def main(args: argparse.Namespace) -> None:
         dataset = dataset.map(create_inputs)
         if training:
             dataset = dataset.shuffle(len(dataset))
-        dataset = dataset.batch(1)
-        dataset = dataset.take(1)
+        dataset = dataset.batch(args.batch_size)
         dataset = dataset.prefetch(tf.data.AUTOTUNE)
         return dataset
 
@@ -202,7 +207,7 @@ def main(args: argparse.Namespace) -> None:
               callbacks=[
                   tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
                   tf.keras.callbacks.ModelCheckpoint(filepath=best_checkpoint_path, save_weights_only=False,
-                                                     monitor='val_accuracy', mode='max', save_best_only=True)]
+                                                     monitor='val_iou', mode='max', save_best_only=True)]
               )
     # exit()
     print(args)
@@ -235,6 +240,13 @@ def main(args: argparse.Namespace) -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     args = parser.parse_args([] if "__file__" not in globals() else None)
+    if args.logging_level == "info":
+        logging.basicConfig(level=logging.INFO)
+    elif args.logging_level == "debug":
+        logging.basicConfig(level=logging.DEBUG)
+    elif args.logging_level == "warning":
+        logging.basicConfig(level=logging.WARNING)
+    else:
+        raise NotImplementedError("Use 'info' or 'debug' as logging level")
     main(args)
