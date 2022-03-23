@@ -17,8 +17,10 @@ def bboxes_area(bboxes):
     Each bbox is parametrized as a four-tuple (top, left, bottom, right).
     If the bboxes.shape is [..., 4], the output shape is bboxes.shape[:-1].
     """
-    return BACKEND.maximum(bboxes[..., BOTTOM] - bboxes[..., TOP], 0) \
-        * BACKEND.maximum(bboxes[..., RIGHT] - bboxes[..., LEFT], 0)
+    # return BACKEND.maximum(bboxes[..., BOTTOM] - bboxes[..., TOP], 0) \
+    #     * BACKEND.maximum(bboxes[..., RIGHT] - bboxes[..., LEFT], 0)
+    return BACKEND.maximum(np.array([e[BOTTOM] for e in bboxes]) - np.array([e[TOP] for e in bboxes]), 0) \
+           * BACKEND.maximum(np.array([e[RIGHT] for e in bboxes]) - np.array([e[LEFT] for e in bboxes]), 0)
 
 
 def bboxes_iou(xs, ys):
@@ -31,15 +33,27 @@ def bboxes_iou(xs, ys):
     xs and ys. Formally, the output shape is np.broadcast(xs, ys).shape[:-1].
     """
     intersections = BACKEND.stack([
-        BACKEND.maximum(xs[..., TOP], ys[..., TOP]),
-        BACKEND.maximum(xs[..., LEFT], ys[..., LEFT]),
-        BACKEND.minimum(xs[..., BOTTOM], ys[..., BOTTOM]),
-        BACKEND.minimum(xs[..., RIGHT], ys[..., RIGHT]),
+        # BACKEND.maximum(xs[..., TOP], ys[..., TOP]),
+        # BACKEND.maximum(xs[..., LEFT], ys[..., LEFT]),
+        # BACKEND.minimum(xs[..., BOTTOM], ys[..., BOTTOM]),
+        # BACKEND.minimum(xs[..., RIGHT], ys[..., RIGHT]),
+        BACKEND.maximum([e[TOP] for e in xs], [e[TOP] for e in ys]),
+        BACKEND.maximum([e[LEFT] for e in xs], [e[LEFT] for e in ys]),
+        BACKEND.minimum([e[BOTTOM] for e in xs], [e[BOTTOM] for e in ys]),
+        BACKEND.minimum([e[RIGHT] for e in xs], [e[RIGHT] for e in ys]),
     ], axis=-1)
 
     xs_area, ys_area, intersections_area = bboxes_area(xs), bboxes_area(ys), bboxes_area(intersections)
 
     return intersections_area / (xs_area + ys_area - intersections_area)
+
+
+def transform_coordinates(coordinates_array):
+    x = coordinates_array[LEFT] + (coordinates_array[RIGHT] - coordinates_array[LEFT]) / 2
+    y = coordinates_array[BOTTOM] + (coordinates_array[TOP] - coordinates_array[BOTTOM]) / 2
+    w = coordinates_array[RIGHT] - coordinates_array[LEFT]
+    h = coordinates_array[BOTTOM] - coordinates_array[TOP]
+    return x, y, w, h
 
 
 def bboxes_to_fast_rcnn(anchors, bboxes):
@@ -55,9 +69,18 @@ def bboxes_to_fast_rcnn(anchors, bboxes):
     If the anchors.shape is [anchors_len, 4], bboxes.shape is [anchors_len, 4],
     the output shape is [anchors_len, 4].
     """
+    # : Implement according to the docstring.
+    fast_rcnns = []
+    for anchor, bbox in zip(anchors, bboxes):
+        x, y, w, h = transform_coordinates(bbox)
+        x_r, y_r, w_r, h_r = transform_coordinates(anchor)
+        center_y = (y - y_r) / h_r
+        center_x = (x - x_r) / w_r
+        height = np.log(h / h_r)
+        width = np.log(w / w_r)
+        fast_rcnns.append([center_y, center_x, height, width])
 
-    # TODO: Implement according to the docstring.
-    raise NotImplementedError()
+    return fast_rcnns
 
 
 def bboxes_from_fast_rcnn(anchors, fast_rcnns):
@@ -65,9 +88,25 @@ def bboxes_from_fast_rcnn(anchors, fast_rcnns):
     The anchors.shape is [anchors_len, 4], fast_rcnns.shape is [anchors_len, 4],
     the output shape is [anchors_len, 4].
     """
+    # : Implement according to the docstring.
+    bboxes = []
+    for anchor, fast_rcnn in zip(anchors, fast_rcnns):
+        x_r, y_r, w_r, h_r = transform_coordinates(anchor)
+        center_y, center_x, height, width = fast_rcnn
 
-    # TODO: Implement according to the docstring.
-    raise NotImplementedError()
+        x = center_x * w_r + x_r
+        y = center_y * h_r + y_r
+        w = np.exp(width) * w_r
+        h = np.exp(height) * h_r
+
+        top = y - h/2
+        bottom = y + h / 2
+        left = x - w/2
+        right = x + w / 2
+
+        bboxes.append([top, left, bottom, right])
+
+    return bboxes
 
 
 def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
@@ -95,15 +134,53 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
       (again the one with smaller index if there are several), and if the IoU
       is >= iou_threshold, assign the object to the anchor.
     """
+    anchor_tuples = []
 
-    # TODO: First, for each gold object, assign it to an anchor with the
+    # : First, for each gold object, assign it to an anchor with the
     # largest IoU (the one with smaller index if there are several). In case
     # several gold objects are assigned to a single anchor, use the gold object
     # with smaller index.
+    for gold_bbox in gold_bboxes:
+        iou_comparisons = np.array([bboxes_iou([gold_bbox], [anchor])[0] for anchor in anchors])
+        largest_iou_anchor = anchors[np.argmax(iou_comparisons)]
+        anchor_tuples.append((largest_iou_anchor, gold_bbox))
+
+    # helper methods
+    def anchor_in_list(anchor, anchors):
+        for a in anchors:
+            if np.array_equal(a, anchor):
+                return True
+        return False
+
+    def get_element_in_list_idx(searched_element, list):
+        for i, e in enumerate(list):
+            if np.array_equal(e, searched_element):
+                return i
+        raise RuntimeError(f"element {searched_element} not in list {list}")
 
     # TODO: For each unused anchors, find the gold object with the largest IoU
     # (again the one with smaller index if there are several), and if the IoU
     # is >= threshold, assign the object to the anchor.
+    used_anchors = [anchor_tuple[0] for anchor_tuple in anchor_tuples]
+    for anchor in anchors:
+        if not anchor_in_list(anchor, used_anchors):
+            iou_comparisons = np.array([bboxes_iou([gold_bbox], [anchor])[0] for gold_bbox in gold_bboxes])
+            if np.argmax(iou_comparisons) >= iou_threshold:
+                largest_iou_bbox = gold_bboxes[np.argmax(iou_comparisons)]
+                anchor_tuples.append((anchor, largest_iou_bbox))
+
+    # create results and assign classes
+    used_anchors = [anchor_tuple[0] for anchor_tuple in anchor_tuples]
+    anchor_bboxes = []
+    anchor_classes = []
+    for anchor in anchors:
+        if anchor_in_list(anchor, used_anchors):
+            anchor, gold_bbox = list(filter(lambda anchor_tuple: np.array_equal(anchor_tuple[0], anchor), anchor_tuples))[0]
+            # anchor_bboxes.append(bboxes_to_fast_rcnn([anchor], [gold_bbox])[0])  # bboxes_to_fast_rcnn
+            anchor_classes.append(1 + gold_classes[get_element_in_list_idx(gold_bbox, gold_bboxes)])
+        else:
+            anchor_bboxes.append([0, 0, 0, 0])
+            anchor_classes.append(0)
 
     return anchor_classes, anchor_bboxes
 
