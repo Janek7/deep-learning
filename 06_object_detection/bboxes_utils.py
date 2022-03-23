@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
 import unittest
 
 import numpy as np
@@ -17,10 +20,8 @@ def bboxes_area(bboxes):
     Each bbox is parametrized as a four-tuple (top, left, bottom, right).
     If the bboxes.shape is [..., 4], the output shape is bboxes.shape[:-1].
     """
-    # return BACKEND.maximum(bboxes[..., BOTTOM] - bboxes[..., TOP], 0) \
-    #     * BACKEND.maximum(bboxes[..., RIGHT] - bboxes[..., LEFT], 0)
-    return BACKEND.maximum(np.array([e[BOTTOM] for e in bboxes]) - np.array([e[TOP] for e in bboxes]), 0) \
-           * BACKEND.maximum(np.array([e[RIGHT] for e in bboxes]) - np.array([e[LEFT] for e in bboxes]), 0)
+    return BACKEND.maximum(bboxes[..., BOTTOM] - bboxes[..., TOP], 0) \
+        * BACKEND.maximum(bboxes[..., RIGHT] - bboxes[..., LEFT], 0)
 
 
 def bboxes_iou(xs, ys):
@@ -33,14 +34,10 @@ def bboxes_iou(xs, ys):
     xs and ys. Formally, the output shape is np.broadcast(xs, ys).shape[:-1].
     """
     intersections = BACKEND.stack([
-        # BACKEND.maximum(xs[..., TOP], ys[..., TOP]),
-        # BACKEND.maximum(xs[..., LEFT], ys[..., LEFT]),
-        # BACKEND.minimum(xs[..., BOTTOM], ys[..., BOTTOM]),
-        # BACKEND.minimum(xs[..., RIGHT], ys[..., RIGHT]),
-        BACKEND.maximum([e[TOP] for e in xs], [e[TOP] for e in ys]),
-        BACKEND.maximum([e[LEFT] for e in xs], [e[LEFT] for e in ys]),
-        BACKEND.minimum([e[BOTTOM] for e in xs], [e[BOTTOM] for e in ys]),
-        BACKEND.minimum([e[RIGHT] for e in xs], [e[RIGHT] for e in ys]),
+        BACKEND.maximum(xs[..., TOP], ys[..., TOP]),
+        BACKEND.maximum(xs[..., LEFT], ys[..., LEFT]),
+        BACKEND.minimum(xs[..., BOTTOM], ys[..., BOTTOM]),
+        BACKEND.minimum(xs[..., RIGHT], ys[..., RIGHT])
     ], axis=-1)
 
     xs_area, ys_area, intersections_area = bboxes_area(xs), bboxes_area(ys), bboxes_area(intersections)
@@ -141,11 +138,12 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
     # several gold objects are assigned to a single anchor, use the gold object
     # with smaller index.
     for gold_bbox in gold_bboxes:
-        iou_comparisons = np.array([bboxes_iou([gold_bbox], [anchor])[0] for anchor in anchors])
+        # reshape from [...] to [[...]] necessary because bboxes_iou expects two dim array
+        iou_comparisons = np.array([bboxes_iou(gold_bbox.reshape(1, -1), anchor.reshape(1, -1))[0] for anchor in anchors])
         largest_iou_anchor = anchors[np.argmax(iou_comparisons)]
         anchor_tuples.append((largest_iou_anchor, gold_bbox))
 
-    # helper methods
+    # helper methods because `nd.array in list` fails
     def anchor_in_list(anchor, anchors):
         for a in anchors:
             if np.array_equal(a, anchor):
@@ -158,15 +156,17 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
                 return i
         raise RuntimeError(f"element {searched_element} not in list {list}")
 
-    # TODO: For each unused anchors, find the gold object with the largest IoU
+    # : For each unused anchors, find the gold object with the largest IoU
     # (again the one with smaller index if there are several), and if the IoU
     # is >= threshold, assign the object to the anchor.
     used_anchors = [anchor_tuple[0] for anchor_tuple in anchor_tuples]
     for anchor in anchors:
         if not anchor_in_list(anchor, used_anchors):
-            iou_comparisons = np.array([bboxes_iou([gold_bbox], [anchor])[0] for gold_bbox in gold_bboxes])
-            if np.argmax(iou_comparisons) >= iou_threshold:
-                largest_iou_bbox = gold_bboxes[np.argmax(iou_comparisons)]
+            # reshape from [...] to [[...]] necessary because bboxes_iou expects two dim array
+            iou_comparisons = np.array([bboxes_iou(gold_bbox.reshape(1, -1), anchor.reshape(1, -1))[0] for gold_bbox in gold_bboxes])
+            max_iou_idx = np.argmax(iou_comparisons)
+            if iou_comparisons[max_iou_idx] >= iou_threshold:
+                largest_iou_bbox = gold_bboxes[max_iou_idx]
                 anchor_tuples.append((anchor, largest_iou_bbox))
 
     # create results and assign classes
@@ -176,7 +176,7 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
     for anchor in anchors:
         if anchor_in_list(anchor, used_anchors):
             anchor, gold_bbox = list(filter(lambda anchor_tuple: np.array_equal(anchor_tuple[0], anchor), anchor_tuples))[0]
-            # anchor_bboxes.append(bboxes_to_fast_rcnn([anchor], [gold_bbox])[0])  # bboxes_to_fast_rcnn
+            anchor_bboxes.append(bboxes_to_fast_rcnn([anchor], [gold_bbox])[0])
             anchor_classes.append(1 + gold_classes[get_element_in_list_idx(gold_bbox, gold_bboxes)])
         else:
             anchor_bboxes.append([0, 0, 0, 0])
