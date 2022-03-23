@@ -138,8 +138,7 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
     # several gold objects are assigned to a single anchor, use the gold object
     # with smaller index.
     for gold_bbox in gold_bboxes:
-        # reshape from [...] to [[...]] necessary because bboxes_iou expects two dim array
-        iou_comparisons = np.array([bboxes_iou(gold_bbox.reshape(1, -1), anchor.reshape(1, -1))[0] for anchor in anchors])
+        iou_comparisons = bboxes_iou(gold_bbox, anchors)
         largest_iou_anchor = anchors[np.argmax(iou_comparisons)]
         anchor_tuples.append((largest_iou_anchor, gold_bbox))
 
@@ -162,8 +161,7 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
     used_anchors = [anchor_tuple[0] for anchor_tuple in anchor_tuples]
     for anchor in anchors:
         if not anchor_in_list(anchor, used_anchors):
-            # reshape from [...] to [[...]] necessary because bboxes_iou expects two dim array
-            iou_comparisons = np.array([bboxes_iou(gold_bbox.reshape(1, -1), anchor.reshape(1, -1))[0] for gold_bbox in gold_bboxes])
+            iou_comparisons = bboxes_iou(gold_bboxes, anchor)
             max_iou_idx = np.argmax(iou_comparisons)
             if iou_comparisons[max_iou_idx] >= iou_threshold:
                 largest_iou_bbox = gold_bboxes[max_iou_idx]
