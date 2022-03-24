@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
 import argparse
 import datetime
 import os
@@ -9,6 +12,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Report only TF errors by d
 import numpy as np
 import tensorflow as tf
 
+from padding import pad_batch_of_images
 from mnist import MNIST
 
 parser = argparse.ArgumentParser()
@@ -65,21 +69,18 @@ class Convolution:
                                  n: n+inputs.shape[2]-(self._kernel.shape[1]-1): self._stride,  # height stride
                                  :  # all input channels
                                  ]
-                # kernel_m_n = tf.add(tf.linalg.matmul(strided_inputs, self._kernel[i_m, i_n, :, :]), self._bias)
-                kernel_m_n = (strided_inputs @ self._kernel[m, n, :, :]) + self._bias
-                # print(f"{strided_inputs.shape} x {n.shape} = {kernel_m_n.shape}")
+                # print(f"{strided_inputs.shape} @ {self._kernel[m, n, :, :].shape}")
+                kernel_m_n = (strided_inputs @ self._kernel[m, n, :, :])
                 kernels.append(kernel_m_n)
 
         # sum all kernels together
-        output = tf.add_n(kernels)
-        print(tf.math.count_nonzero(output))
+        output = tf.nn.relu(tf.add_n(kernels) + self._bias)
 
         # If requested, verify that `output` contains a correct value.
         if self._verify:
             reference = tf.nn.relu(tf.nn.convolution(inputs, self._kernel, self._stride) + self._bias)
             np.testing.assert_allclose(output, reference, atol=1e-5, err_msg="Forward pass differs!")
 
-        exit()
         return output
 
     def backward(
@@ -91,7 +92,48 @@ class Convolution:
         # - the `inputs` layer,
         # - `self._kernel`,
         # - `self._bias`.
-        inputs_gradient, kernel_gradient, bias_gradient = None, None, None
+
+        # 1) bias gradient = sum of all elements inn outputs_gradient
+        bias_gradient = tf.reduce_sum(outputs_gradient)
+
+        # 2) kernel_gradient = outer product of outputs_gradient and kernel matrix (as for sgd_manual)
+        kernel_gradients = []
+        for m in range(self._kernel.shape[0]):
+            for n in range(self._kernel.shape[1]):
+                strided_inputs = inputs[
+                                 :,  # all batches
+                                 m: m + inputs.shape[1] - (self._kernel.shape[0] - 1): self._stride,  # width stride
+                                 n: n + inputs.shape[2] - (self._kernel.shape[1] - 1): self._stride,  # height stride
+                                 :  # all input channels
+                                 ]
+                kernel_gradient = tf.einsum("abci,abcj->abcij", strided_inputs, outputs_gradient)
+                kernel_gradients.append(kernel_gradient)
+        # sum all kernels together and reduce_sum
+        kernel_gradient = tf.reduce_sum(tf.add_n(kernel_gradients))
+
+        # 3) inputs_gradient = compute conv but with transposed kernel. but we need to add padding again (add 2*k-1
+        # again) and we need to take care of skipped ones by stride
+        input_gradients = []
+        k = self._kernel.shape[0]
+        for m in range(k):
+            for n in range(k):
+                print("outputs_gradient.shape", outputs_gradient.shape)
+                outputs_gradient_temp = pad_batch_of_images(outputs_gradient)
+                print("outputs_gradient (padded).shape", outputs_gradient_temp.shape)
+                outputs_gradient_temp = outputs_gradient_temp[
+                              :,
+                              ...,
+                              ...,
+                              :
+                              ]
+                input_gradient_n_m = None
+                # TODO: how can be temp_output_gradient second? First dim is there 50 of batch size and this will never fit to kernel
+                # input_gradient_n_m = self._kernel[n, m, :, :] @ outputs_gradient_temp
+
+                raise NotImplementedError("TODO!")
+
+                input_gradients.append(input_gradient_n_m)
+        inputs_gradient = tf.reduce_sum(tf.add_n(input_gradients))
 
         # If requested, verify that the three computed gradients are correct.
         if self._verify:
