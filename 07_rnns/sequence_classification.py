@@ -12,18 +12,18 @@ import tensorflow as tf
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
 parser.add_argument("--batch_size", default=16, type=int, help="Batch size.")
-parser.add_argument("--clip_gradient", default=None, type=float, help="Norm for gradient clipping.")
-parser.add_argument("--hidden_layer", default=0, type=int, help="Additional hidden layer after RNN.")
-parser.add_argument("--epochs", default=20, type=int, help="Number of epochs.")
+parser.add_argument("--clip_gradient", default=0.01, type=float, help="Norm for gradient clipping.")
+parser.add_argument("--hidden_layer", default=50, type=int, help="Additional hidden layer after RNN.")
+parser.add_argument("--epochs", default=5, type=int, help="Number of epochs.")
 parser.add_argument("--rnn_cell", default="LSTM", type=str, help="RNN cell type.")
 parser.add_argument("--rnn_cell_dim", default=10, type=int, help="RNN cell dimension.")
 parser.add_argument("--sequence_dim", default=1, type=int, help="Sequence element dimension.")
-parser.add_argument("--sequence_length", default=50, type=int, help="Sequence length.")
+parser.add_argument("--sequence_length", default=20, type=int, help="Sequence length.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--test_sequences", default=1000, type=int, help="Number of testing sequences.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
-parser.add_argument("--train_sequences", default=10000, type=int, help="Number of training sequences.")
+parser.add_argument("--train_sequences", default=1000, type=int, help="Number of training sequences.")
 # If you add more arguments, ReCodEx will keep them with your default values.
 
 
@@ -56,7 +56,7 @@ class Model(tf.keras.Model):
         # Construct the model.
         sequences = tf.keras.layers.Input(shape=[args.sequence_length, args.sequence_dim])
 
-        # TODO: Process the sequence using a RNN with cell type `args.rnn_cell`
+        # : Process the sequence using a RNN with cell type `args.rnn_cell`
         # and with dimensionality `args.rnn_cell_dim`. Use `return_sequences=True`
         # to get outputs for all sequence elements.
         #
@@ -64,12 +64,24 @@ class Model(tf.keras.Model):
         # `tf.keras.layers.RNN` wrapper with `tf.keras.layers.{LSTM,GRU,SimpleRNN}Cell`,
         # because the former can run transparently on a GPU and is also
         # considerably faster on a CPU).
+        if args.rnn_cell == 'LSTM':
+            cell_type = tf.keras.layers.LSTM
+        elif args.rnn_cell == 'GRU':
+            cell_type = tf.keras.layers.GRU
+        elif args.rnn_cell == 'SimpleRNN':
+            cell_type = tf.keras.layers.SimpleRNN
+        else:
+            raise NotImplementedError(f"{args.rnn_cell} is not a valid RNN cell")
+        rnn_sequences = cell_type(units=args.rnn_cell_dim, return_sequences=True)(sequences)
 
-        # TODO: If `args.hidden_layer` is nonzero, process the result using
+        # : If `args.hidden_layer` is nonzero, process the result using
         # a ReLU-activated fully connected layer with `args.hidden_layer` units.
+        if args.hidden_layer:
+            rnn_sequences = tf.keras.layers.Dense(args.hidden_layer, activation=tf.nn.relu)(rnn_sequences)
 
-        # TODO: Generate `predictions` using a fully connected layer
+        # : Generate `predictions` using a fully connected layer
         # with one output and `tf.nn.sigmoid` activation.
+        predictions = tf.keras.layers.Dense(1, activation=tf.nn.sigmoid)(rnn_sequences)
 
         super().__init__(inputs=sequences, outputs=predictions)
 
