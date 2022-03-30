@@ -14,11 +14,11 @@ from morpho_dataset import MorphoDataset
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
 parser.add_argument("--batch_size", default=10, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=5, type=int, help="Number of epochs.")
-parser.add_argument("--max_sentences", default=None, type=int, help="Maximum number of sentences to load.")
+parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
+parser.add_argument("--max_sentences", default=1000, type=int, help="Maximum number of sentences to load.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
-parser.add_argument("--rnn_cell", default="LSTM", type=str, help="RNN cell type.")
-parser.add_argument("--rnn_cell_dim", default=64, type=int, help="RNN cell dimension.")
+parser.add_argument("--rnn_cell", default="GRU", type=str, help="RNN cell type.")
+parser.add_argument("--rnn_cell_dim", default=16, type=int, help="RNN cell dimension.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 parser.add_argument("--we_dim", default=128, type=int, help="Word embedding dimension.")
@@ -31,20 +31,35 @@ class Model(tf.keras.Model):
         # a RaggedTensor of strings, each batch example being a list of words.
         words = tf.keras.layers.Input(shape=[None], dtype=tf.string, ragged=True)
 
-        # TODO: Map strings in `words` to indices by using the `word_mapping` of `train.forms`.
+        # : Map strings in `words` to indices by using the `word_mapping` of `train.forms`.
+        words_indices = train.forms.word_mapping(words)
 
-        # TODO: Embed input words with dimensionality `args.we_dim`. Note that the `word_mapping`
+        # : Embed input words with dimensionality `args.we_dim`. Note that the `word_mapping`
         # provides a `vocabulary_size()` call returning the number of unique words in the mapping.
+        embeddings = tf.keras.layers.Embedding(train.forms.word_mapping.vocabulary_size(), args.we_dim)(words_indices)
 
-        # TODO: Create the specified `args.rnn_cell` RNN cell (LSTM, GRU) with
+        # : Create the specified `args.rnn_cell` RNN cell (LSTM, GRU) with
         # dimension `args.rnn_cell_dim`. The cell should produce an output for every
         # sequence element (so a 3D output). Then apply it in a bidirectional way on
         # the embedded words, **summing** the outputs of forward and backward RNNs.
+        if args.rnn_cell == 'LSTM':
+            cell_type = tf.keras.layers.LSTM
+        elif args.rnn_cell == 'GRU':
+            cell_type = tf.keras.layers.GRU
+        else:
+            raise NotImplementedError(f"{args.rnn_cell} is not a valid RNN cell")
+        rnn_forward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True)(embeddings)
+        rnn_backward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, go_backwards=True)(embeddings)
+        rnn_backward_seq = tf.reverse(rnn_backward_seq, axis=[1])
+        rnn_sequences = tf.keras.layers.Add()([rnn_forward_seq, rnn_backward_seq])
+        # rnn_sequences = tf.keras.layers.Bidirectional(cell_type(units=args.rnn_cell_dim, return_sequences=True),
+        #                                               merge_mode='sum')(embeddings)
 
-        # TODO: Add a softmax classification layer into as many classes as there are unique
+        # : Add a softmax classification layer into as many classes as there are unique
         # tags in the `word_mapping` of `train.tags`. Note that the Dense layer can process
         # a RaggedTensor without any problem.
-        predictions = None
+        predictions = tf.keras.layers.Dense(train.tags.word_mapping.vocabulary_size(),
+                                            activation=tf.nn.softmax)(rnn_sequences)
 
         # Check that the created predictions are a 3D tensor.
         assert predictions.shape.rank == 3
@@ -75,12 +90,12 @@ def main(args: argparse.Namespace) -> Dict[str, float]:
     # Create the model and train
     model = Model(args, morpho.train)
 
-    # TODO: Construct dataset for training, which should contain pairs of
+    # : Construct dataset for training, which should contain pairs of
     # - tensor of string words (forms) as input
     # - tensor of integral tag ids as targets.
     # To create the identifiers, use the `word_mapping` of `morpho.train.tags`.
     def tagging_dataset(example):
-        raise NotImplementedError()
+        return example['forms'], morpho.train.tags.word_mapping(example['tags'])
 
     def create_dataset(name):
         dataset = getattr(morpho, name).dataset
