@@ -12,14 +12,13 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Report only TF errors by d
 import numpy as np
 import tensorflow as tf
 
-from padding import pad_batch_of_images
 from mnist import MNIST
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
 parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-parser.add_argument("--cnn", default="5-3-2,10-3-2", type=str, help="CNN architecture.")
-parser.add_argument("--epochs", default=5, type=int, help="Number of epochs.")
+parser.add_argument("--cnn", default="5-3-2", type=str, help="CNN architecture.")
+parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--learning_rate", default=0.01, type=float, help="Learning rate.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
@@ -51,15 +50,6 @@ class Convolution:
         # input filters, or output filters. However, you can manually
         # iterate through the kernel size.
 
-        """
-        target shape: (50, 13, 13, 5)
-        ------------------------------
-        Inputs shape: (50, 28, 28, 1)
-        Filters: 5
-        Kernel shape: (3, 3, 1, 5)
-        Stride: 2
-        Bias shape: (5,)
-        """
         kernels = []
         for m in range(self._kernel.shape[0]):
             for n in range(self._kernel.shape[1]):
@@ -69,7 +59,6 @@ class Convolution:
                                  n: n+inputs.shape[2]-(self._kernel.shape[1]-1): self._stride,  # height stride
                                  :  # all input channels
                                  ]
-                # print(f"{strided_inputs.shape} @ {self._kernel[m, n, :, :].shape}")
                 kernel_m_n = (strided_inputs @ self._kernel[m, n, :, :])
                 kernels.append(kernel_m_n)
 
@@ -86,54 +75,58 @@ class Convolution:
     def backward(
         self, inputs: tf.Tensor, outputs: tf.Tensor, outputs_gradient: tf.Tensor
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-        # TODO: Given this layer's inputs, this layer's outputs,
+        # : Given this layer's inputs, this layer's outputs,
         # and the gradient with respect to the layer's outputs,
         # compute the derivatives of the loss with respect to
         # - the `inputs` layer,
         # - `self._kernel`,
         # - `self._bias`.
-
-        # 1) bias gradient = sum of all elements inn outputs_gradient
-        bias_gradient = tf.reduce_sum(outputs_gradient)
-
-        # 2) kernel_gradient = outer product of outputs_gradient and kernel matrix (as for sgd_manual)
-        kernel_gradients = []
-        for m in range(self._kernel.shape[0]):
-            for n in range(self._kernel.shape[1]):
-                strided_inputs = inputs[
-                                 :,  # all batches
-                                 m: m + inputs.shape[1] - (self._kernel.shape[0] - 1): self._stride,  # width stride
-                                 n: n + inputs.shape[2] - (self._kernel.shape[1] - 1): self._stride,  # height stride
-                                 :  # all input channels
-                                 ]
-                kernel_gradient = tf.einsum("abci,abcj->abcij", strided_inputs, outputs_gradient)
-                kernel_gradients.append(kernel_gradient)
-        # sum all kernels together and reduce_sum
-        kernel_gradient = tf.reduce_sum(tf.add_n(kernel_gradients))
-
-        # 3) inputs_gradient = compute conv but with transposed kernel. but we need to add padding again (add 2*k-1
-        # again) and we need to take care of skipped ones by stride
-        input_gradients = []
         k = self._kernel.shape[0]
+
+        # compute output gradients with relu derivation
+        outputs_gradient = outputs_gradient * tf.cast(outputs > 0, tf.float32)
+
+        # compute bias gradient
+        bias_gradient = tf.reduce_sum(outputs_gradient, axis=[0, 1, 2])
+
+        # pad for Inputs Gradient Variant A (not used)
+        # pad output gradient - init with zeros and shape of input but channels of output
+        # output_gradient_padded = tf.Variable(tf.zeros(inputs.shape[:3] + [outputs_gradient.shape[-1]]))
+        # output_gradient_padded[:, :-(k-1):self._stride, :-(k-1):self._stride].assign(outputs_gradient)
+
+        # compute input and kernel gradient
+        kernel_gradient = tf.Variable(tf.zeros_like(self._kernel))
+        # inputs_gradient_A = 0
+        inputs_gradient_B = tf.Variable(tf.zeros_like(inputs))
+
         for m in range(k):
             for n in range(k):
-                print("outputs_gradient.shape", outputs_gradient.shape)
-                outputs_gradient_temp = pad_batch_of_images(outputs_gradient)
-                print("outputs_gradient (padded).shape", outputs_gradient_temp.shape)
-                outputs_gradient_temp = outputs_gradient_temp[
-                              :,
-                              ...,
-                              ...,
-                              :
-                              ]
-                input_gradient_n_m = None
-                # TODO: how can be temp_output_gradient second? First dim is there 50 of batch size and this will never fit to kernel
-                # input_gradient_n_m = self._kernel[n, m, :, :] @ outputs_gradient_temp
+                # kernel gradient
+                strided_inputs = inputs[
+                                 :,  # all batches
+                                 m: m + inputs.shape[1] - (k - 1): self._stride,  # width stride
+                                 n: n + inputs.shape[2] - (k - 1): self._stride,  # height stride
+                                 :  # all input channels
+                                 ]
+                kernel_gradient[m, n].assign(tf.einsum("abci,abcj->ij", strided_inputs, outputs_gradient))
 
-                raise NotImplementedError("TODO!")
+                # Approach A: fails because input gradient shape at the end differs
+                # strided_output_gradient = output_gradient_padded[
+                #                              :,  # all batches
+                #                              m: m + inputs.shape[1] - (k - 1): self._stride,  # width stride
+                #                              n: n + inputs.shape[2] - (k - 1): self._stride,  # height stride
+                #                              :  # all input channels
+                #                              ]
+                # inputs_gradient_A += (strided_output_gradient @ tf.transpose(self._kernel[k - 1 - m, k - 1 - n, :, :]))
 
-                input_gradients.append(input_gradient_n_m)
-        inputs_gradient = tf.reduce_sum(tf.add_n(input_gradients))
+                # Approach B: do not pad output gradients before, but slice fitting inputs_gradients
+                inputs_gradient_slice = inputs_gradient_B[:,
+                                                           m: m + ((((inputs.shape[1] - k) // self._stride) + 1) * self._stride): self._stride,
+                                                           n: n + ((((inputs.shape[2] - k) // self._stride) + 1) * self._stride): self._stride,
+                                                           :]
+                inputs_gradient_slice.assign(inputs_gradient_slice + outputs_gradient @ tf.transpose(self._kernel[m, n]))
+
+        inputs_gradient = inputs_gradient_B
 
         # If requested, verify that the three computed gradients are correct.
         if self._verify:
