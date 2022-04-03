@@ -43,3 +43,8 @@ class MorphoAnalyzer:
 
     def get(self, word: str) -> List[LemmaTag]:
         return self.analyses.get(word, [])
+
+
+if __name__ == '__main__':
+    analyses = MorphoAnalyzer("czech_pdt_analyses")
+    print(analyses.get("vodu"))
