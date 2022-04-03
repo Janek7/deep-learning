@@ -179,8 +179,8 @@ def bboxes_training(anchors, gold_classes, gold_bboxes, iou_threshold):
         else:
             anchor_bboxes.append([0, 0, 0, 0])
             anchor_classes.append(0)
-
-    return anchor_classes, anchor_bboxes
+    anchor_bboxes_np = np.array(anchor_bboxes, dtype=np.float32)
+    return anchor_classes, anchor_bboxes_np
 
 
 def main(args):
