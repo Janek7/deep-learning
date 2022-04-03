@@ -26,7 +26,10 @@ parser.add_argument("--rnn_cell_dim", default=16, type=int, help="RNN cell dimen
 parser.add_argument("--we_dim", default=64, type=int, help="Word embedding dimension.")
 parser.add_argument("--word_masking", default=0.1, type=float, help="Mask words with the given probability.")
 # more params
-...
+parser.add_argument("--l2", default=None, type=float, help="L2 regularization.")
+parser.add_argument("--decay", default="None", type=str, help="Learning decay rate type")
+parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial learning rate.")
+parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
 
 
 # A layer setting given rate of elements to zero.
@@ -57,6 +60,35 @@ class MaskElements(tf.keras.layers.Layer):
 class Model(tf.keras.Model):
 
     def __init__(self, args: argparse.Namespace, train: MorphoDataset.Dataset, morph_analyzer: MorphoAnalyzer) -> None:
+
+        # A: interpreting hyper parameters
+        if args.l2:
+            reg = tf.keras.regularizers.L2(args.l2)
+        else:
+            reg = None
+
+        if not args.decay or args.decay in ["None", "none"]:
+            learning_rate = args.learning_rate
+        else:
+            decay_steps = (len(train) / args.batch_size) * args.epochs
+            if args.decay == 'linear':
+                learning_rate = tf.keras.optimizers.schedules.PolynomialDecay(decay_steps=decay_steps,
+                                                                              initial_learning_rate=args.learning_rate,
+                                                                              end_learning_rate=args.learning_rate_final,
+                                                                              power=1.0)
+            elif args.decay == 'exponential':
+                decay_rate = args.learning_rate_final / args.learning_rate
+                learning_rate = tf.optimizers.schedules.ExponentialDecay(decay_steps=decay_steps,
+                                                                         decay_rate=decay_rate,
+                                                                         initial_learning_rate=args.learning_rate)
+            elif args.decay == 'cosine':
+                learning_rate = tf.keras.optimizers.schedules.CosineDecay(decay_steps=decay_steps,
+                                                                          initial_learning_rate=args.learning_rate)
+            else:
+                raise NotImplementedError("Use only 'linear', 'exponential' or 'cosine' as LR scheduler")
+
+        # B: build model
+
         # Implement a one-layer RNN network. The input `words` is
         # a RaggedTensor of strings, each batch example being a list of words.
         words = tf.keras.layers.Input(shape=[None], dtype=tf.string, ragged=True)
@@ -104,8 +136,9 @@ class Model(tf.keras.Model):
         # : Pass the embedded letters through a bidirectional GRU layer
         # with dimensionality `args.cle_dim`, obtaining character-level representations
         # of the whole words, **concatenating** the outputs of the forward and backward RNNs.
-        cle_forward_seq = tf.keras.layers.GRU(units=args.rnn_cell_dim)(cle_embeddings)
-        cle_backward_seq = tf.keras.layers.GRU(units=args.rnn_cell_dim, go_backwards=True)(cle_embeddings)
+        cle_forward_seq = tf.keras.layers.GRU(units=args.rnn_cell_dim, kernel_initializer=reg)(cle_embeddings)
+        cle_backward_seq = tf.keras.layers.GRU(units=args.rnn_cell_dim, kernel_initializer=reg, go_backwards=True)\
+            (cle_embeddings)
         cle_sequences = tf.keras.layers.Concatenate()([cle_forward_seq, cle_backward_seq])
         # cle_sequences = tf.keras.layers.Bidirectional(tf.keras.layers.GRU(units=args.rnn_cell_dim),
         #                                               merge_mode='concat')(cle_embeddings)
@@ -133,8 +166,10 @@ class Model(tf.keras.Model):
             cell_type = tf.keras.layers.GRU
         else:
             raise NotImplementedError(f"{args.rnn_cell} is not a valid RNN cell")
-        rnn_forward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True)(concatted_embeddings)
-        rnn_backward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, go_backwards=True)(concatted_embeddings)
+        rnn_forward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, kernel_initializer=reg)\
+            (concatted_embeddings)
+        rnn_backward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, kernel_initializer=reg,
+                                     go_backwards=True)(concatted_embeddings)
         rnn_backward_seq = tf.reverse(rnn_backward_seq, axis=[1])
         rnn_sequences = tf.keras.layers.Add()([rnn_forward_seq, rnn_backward_seq])
         # rnn_sequences = tf.keras.layers.Bidirectional(cell_type(units=args.rnn_cell_dim, return_sequences=True),
@@ -143,13 +178,13 @@ class Model(tf.keras.Model):
         # (tagger_we): Add a softmax classification layer into as many classes as there are unique
         # tags in the `word_mapping` of `train.tags`. Note that the Dense layer can process
         # a RaggedTensor without any problem.
-        predictions = tf.keras.layers.Dense(train.tags.word_mapping.vocabulary_size(),
-                                            activation=tf.nn.softmax)(rnn_sequences)
+        predictions = tf.keras.layers.Dense(train.tags.word_mapping.vocabulary_size(), activation=tf.nn.softmax,
+                                            kernel_initializer=reg)(rnn_sequences)
 
         # Check that the created predictions are a 3D tensor.
         assert predictions.shape.rank == 3
         super().__init__(inputs=words, outputs=predictions)
-        self.compile(optimizer=tf.optimizers.Adam(),
+        self.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate),
                      loss=tf.losses.SparseCategoricalCrossentropy(),
                      metrics=[tf.metrics.SparseCategoricalAccuracy(name="accuracy")])
 
