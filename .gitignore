@@ -1,5 +1,6 @@
 .idea
 *logs
+*logs_*
 *logs-*
 *.npz
 *zip
@@ -7,6 +8,9 @@
 *test.py
 *.h5
 *.txt
+!requirements.txt
 *.tfrecord
 *cags_segmentation_old.py
 *__pycache__*
+*.bin*
+*.bin.gz.*

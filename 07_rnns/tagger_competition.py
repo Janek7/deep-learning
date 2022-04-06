@@ -3,33 +3,62 @@ import argparse
 import datetime
 import os
 import re
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Report only TF errors by default
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")  # Report only TF errors by default
 
 import numpy as np
 import tensorflow as tf
+import fasttext.util
+import fasttext
 
 from morpho_analyzer import MorphoAnalyzer
 from morpho_dataset import MorphoDataset
 
-# TODO: Define reasonable defaults and optionally more parameters
+# : Define reasonable defaults and optionally more parameters
 parser = argparse.ArgumentParser()
-# standard params
+# A standard params
 parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
 parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
-# tagger_cle params
+# B tagger_cle params
 parser.add_argument("--cle_dim", default=16, type=int, help="CLE embedding dimension.")
 parser.add_argument("--rnn_cell", default="LSTM", type=str, help="RNN cell type.")
 parser.add_argument("--rnn_cell_dim", default=16, type=int, help="RNN cell dimension.")
 parser.add_argument("--we_dim", default=64, type=int, help="Word embedding dimension.")
 parser.add_argument("--word_masking", default=0.1, type=float, help="Mask words with the given probability.")
-# more params
+# C more params
 parser.add_argument("--l2", default=None, type=float, help="L2 regularization.")
 parser.add_argument("--decay", default="None", type=str, help="Learning decay rate type")
 parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial learning rate.")
 parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
+# allowed values for 'fasttext_mode':
+#   concat (concat to existing word embeddings)
+#   replace (replace existing word embeddings)
+#   None (not use it at all)
+parser.add_argument("--fasttext_mode", default="concat", type=str, help="How to use fast text.")
+parser.add_argument("--fasttext_dim", default=100, type=int, help="Dimension of fasttext vectors.")
+
+
+# A layer retrieving fast text vectors for word.
+class FastText(tf.keras.layers.Layer):
+    def __init__(self, dim):
+        super().__init__()
+        self._dim = dim
+        # load check model
+        fasttext.util.download_model("cs", if_exists="ignore")
+        self.ft = fasttext.load_model('cc.cs.300.bin')
+        fasttext.util.reduce_model(self.ft, dim)
+
+    def get_config(self):
+        return {"dim": self._dim}
+
+    def call(self, inputs, training):
+        def fasttext_eager(inputs):
+            return np.array([self.ft.get_word_vector(w) for w in inputs])
+        inputs_ft = tf.numpy_function(func=fasttext_eager, inp=[inputs], Tout=tf.float32)
+        inputs_ft = tf.ensure_shape(inputs_ft, (None, args.fasttext_dim))  # None for uncertain length of inputs
+        return inputs_ft
 
 
 # A layer setting given rate of elements to zero.
@@ -70,7 +99,7 @@ class Model(tf.keras.Model):
         if not args.decay or args.decay in ["None", "none"]:
             learning_rate = args.learning_rate
         else:
-            decay_steps = (len(train) / args.batch_size) * args.epochs
+            decay_steps = (train.size / args.batch_size) * args.epochs
             if args.decay == 'linear':
                 learning_rate = tf.keras.optimizers.schedules.PolynomialDecay(decay_steps=decay_steps,
                                                                               initial_learning_rate=args.learning_rate,
@@ -93,27 +122,30 @@ class Model(tf.keras.Model):
         # a RaggedTensor of strings, each batch example being a list of words.
         words = tf.keras.layers.Input(shape=[None], dtype=tf.string, ragged=True)
 
-        # (tagger_we): Map strings in `words` to indices by using the `word_mapping` of `train.forms`.
-        words_indices = train.forms.word_mapping(words)
+        # compute word embeddings
+        if args.fasttext_mode in ['replace', 'concat']:
+            words_flattened = words.values
+            w_embeddings_fasttext = FastText(dim=args.fasttext_dim)(words_flattened)
+            w_embeddings_fasttext = words.with_values(w_embeddings_fasttext)
+        if args.fasttext_mode is None or args.fasttext_mode == 'concat':
+            # (tagger_we): Map strings in `words` to indices by using the `word_mapping` of `train.forms`.
+            words_indices = train.forms.word_mapping(words)
+            words_indices = MaskElements(rate=args.word_masking)(words_indices)
 
-        # : With a probability of `args.word_masking`, replace the input word by an
-        # unknown word (which has index 0).
-        #
-        # There are two approaches you can use:
-        # 1) use the above defined `MaskElements` layer, in which you need to implement
-        #    one TOD note. If you do not want to implement it, you can instead
-        # 2) use a `tf.keras.layers.Dropout` to achieve this, even if it is a bit
-        #    hacky, because Dropout cannot process integral inputs. Start by using
-        #    `tf.ones_like` to create a ragged tensor of float32 ones with the same
-        #    structure as the indices of the input words, pass them through a dropout layer
-        #    with `args.word_masking` rate, and finally set the input word ids to 0 where
-        #    the result of dropout is zero.
-        words_indices = MaskElements(rate=args.word_masking)(words_indices)
-
-        # (tagger_we): Embed input words with dimensionality `args.we_dim`. Note that the `word_mapping`
-        # provides a `vocabulary_size()` call returning the number of unique words in the mapping.
-        w_embeddings = tf.keras.layers.Embedding(train.forms.word_mapping.vocabulary_size(),
-                                                 args.we_dim)(words_indices)
+            # (tagger_we): Embed input words with dimensionality `args.we_dim`. Note that the `word_mapping`
+            # provides a `vocabulary_size()` call returning the number of unique words in the mapping.
+            w_embeddings_classic = tf.keras.layers.Embedding(train.forms.word_mapping.vocabulary_size(),
+                                                             args.we_dim)(words_indices)
+        # combine word embeddings based on args.fasttext_mode
+        if args.fasttext_mode == 'concat':
+            w_embeddings = tf.keras.layers.Concatenate()([w_embeddings_fasttext, w_embeddings_classic])
+        elif args.fasttext_mode == 'replace':
+            w_embeddings = w_embeddings_fasttext
+        elif args.fasttext_mode is None:
+            w_embeddings = w_embeddings_classic
+        else:
+            raise NotImplementedError("Allowed values for 'args.fasttext_mode' are 'concat', 'replace' and None.")
+        print(w_embeddings)
 
         # : Create a vector of input words from all batches using `words.values`
         # and pass it through `tf.unique`, obtaining a list of unique words and
@@ -136,8 +168,8 @@ class Model(tf.keras.Model):
         # : Pass the embedded letters through a bidirectional GRU layer
         # with dimensionality `args.cle_dim`, obtaining character-level representations
         # of the whole words, **concatenating** the outputs of the forward and backward RNNs.
-        cle_forward_seq = tf.keras.layers.GRU(units=args.rnn_cell_dim, kernel_initializer=reg)(cle_embeddings)
-        cle_backward_seq = tf.keras.layers.GRU(units=args.rnn_cell_dim, kernel_initializer=reg, go_backwards=True)\
+        cle_forward_seq = tf.keras.layers.GRU(units=args.rnn_cell_dim, kernel_regularizer=reg)(cle_embeddings)
+        cle_backward_seq = tf.keras.layers.GRU(units=args.rnn_cell_dim, kernel_regularizer=reg, go_backwards=True)\
             (cle_embeddings)
         cle_sequences = tf.keras.layers.Concatenate()([cle_forward_seq, cle_backward_seq])
         # cle_sequences = tf.keras.layers.Bidirectional(tf.keras.layers.GRU(units=args.rnn_cell_dim),
@@ -166,9 +198,9 @@ class Model(tf.keras.Model):
             cell_type = tf.keras.layers.GRU
         else:
             raise NotImplementedError(f"{args.rnn_cell} is not a valid RNN cell")
-        rnn_forward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, kernel_initializer=reg)\
+        rnn_forward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, kernel_regularizer=reg)\
             (concatted_embeddings)
-        rnn_backward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, kernel_initializer=reg,
+        rnn_backward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, kernel_regularizer=reg,
                                      go_backwards=True)(concatted_embeddings)
         rnn_backward_seq = tf.reverse(rnn_backward_seq, axis=[1])
         rnn_sequences = tf.keras.layers.Add()([rnn_forward_seq, rnn_backward_seq])
@@ -179,14 +211,15 @@ class Model(tf.keras.Model):
         # tags in the `word_mapping` of `train.tags`. Note that the Dense layer can process
         # a RaggedTensor without any problem.
         predictions = tf.keras.layers.Dense(train.tags.word_mapping.vocabulary_size(), activation=tf.nn.softmax,
-                                            kernel_initializer=reg)(rnn_sequences)
+                                            kernel_regularizer=reg)(rnn_sequences)
 
         # Check that the created predictions are a 3D tensor.
         assert predictions.shape.rank == 3
         super().__init__(inputs=words, outputs=predictions)
         self.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate),
-                     loss=tf.losses.SparseCategoricalCrossentropy(),
+                     loss=lambda yt, yp: tf.losses.SparseCategoricalCrossentropy()(yt.values, yp.values),
                      metrics=[tf.metrics.SparseCategoricalAccuracy(name="accuracy")])
+        # self.summary()
 
         # define callbacks
         self.tb_callback = tf.keras.callbacks.TensorBoard(args.logdir)
@@ -230,7 +263,6 @@ def main(args):
     print(args)
     model.fit(train, epochs=args.epochs, validation_data=dev, callbacks=[model.tb_callback, model.ckp_callback])
     print(args)
-    exit()
 
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
@@ -240,7 +272,7 @@ def main(args):
 
     with open(os.path.join(args.logdir, "tagger_competition.txt"), "w", encoding="utf-8") as predictions_file:
         # : Predict the tags on the test set; update the following prediction
-        # command if you use other output structre than in tagger_we.
+        # command if you use other output structure than in tagger_we.
         predictions = model.predict(test)
         tag_strings = morpho.test.tags.word_mapping.get_vocabulary()
         for sentence in predictions:
