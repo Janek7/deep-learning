@@ -86,7 +86,7 @@ def main(args: argparse.Namespace) -> None:
             anchor_classes, anchor_bboxes = tf.numpy_function(
                 bboxes_utils.bboxes_training,  # name
                 [anchors, example["classes"], example["bboxes"], args.iou_threshold],  # param values
-                (tf.int32, tf.float32)  # return types
+                (tf.int64, tf.float32)  # return types
             )
             anchor_classes_one_hot = tf.one_hot(anchor_classes - 1, SVHN.LABELS)
 
@@ -280,7 +280,7 @@ def main(args: argparse.Namespace) -> None:
         create_predictions(model, dev, filename)
         # read file and evaluate it
         with open(os.path.join(args.logdir, filename), "r", encoding="utf-8-sig") as predictions_file:
-            accuracy = SVHN.evaluate_file(SVHN.dev, predictions_file)
+            accuracy = SVHN.evaluate_file(svhn.dev, predictions_file)
             logs.update({"val_accuracy": accuracy})
 
     best_checkpoint_path = os.path.join(args.logdir, "svhn_competition.ckpt")
@@ -288,7 +288,7 @@ def main(args: argparse.Namespace) -> None:
         train.take(1), batch_size=args.batch_size, epochs=args.epochs,
         callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
                    tf.keras.callbacks.LambdaCallback(on_epoch_end=evaluate_dev),
-                   tf.keras.callbacks.ModelCheckpoint(filepath=model.best_checkpoint_path,
+                   tf.keras.callbacks.ModelCheckpoint(filepath=best_checkpoint_path,
                                                       save_weights_only=False, monitor='val_accuracy',
                                                       mode='max', save_best_only=True)]
     )
