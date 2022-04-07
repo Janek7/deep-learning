@@ -27,8 +27,8 @@ parser.add_argument("--rnn_cell", default="LSTM", type=str, help="RNN cell type.
 parser.add_argument("--rnn_cell_dim", default=16, type=int, help="RNN cell dimension.")
 parser.add_argument("--we_dim", default=64, type=int, help="Word embedding dimension.")
 parser.add_argument("--word_masking", default=0.1, type=float, help="Mask words with the given probability.")
-parser.add_argument("--rnn_layers", default=3, type=int, help="Number of bidirectional rnn layers behind each other.")
-parser.add_argument("--rnn_residual", default="every", type=str, help="where to create a residual connection.")
+parser.add_argument("--rnn_layers", default=1, type=int, help="Number of bidirectional rnn layers behind each other.")
+parser.add_argument("--rnn_residual", default=None, type=str, help="where to create a residual connection.")
 # C more params
 parser.add_argument("--l2", default=None, type=float, help="L2 regularization.")
 parser.add_argument("--decay", default="None", type=str, help="Learning decay rate type")
@@ -50,7 +50,8 @@ class FastText(tf.keras.layers.Layer):
         # load check model
         fasttext.util.download_model("cs", if_exists="ignore")
         self.ft = fasttext.load_model('cc.cs.300.bin')
-        fasttext.util.reduce_model(self.ft, dim)
+        if dim != 300:
+            fasttext.util.reduce_model(self.ft, dim)
 
     def get_config(self):
         return {"dim": self._dim}

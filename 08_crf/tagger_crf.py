@@ -32,20 +32,32 @@ class Model(tf.keras.Model):
         # a RaggedTensor of strings, each batch example being a list of words.
         words = tf.keras.layers.Input(shape=[None], dtype=tf.string, ragged=True)
 
-        # TODO(tagger_we): Map strings in `words` to indices by using the `word_mapping` of `train.forms`.
+        # (tagger_we): Map strings in `words` to indices by using the `word_mapping` of `train.forms`.
+        words_indices = train.forms.word_mapping(words)
 
-        # TODO(tagger_we): Embed input words with dimensionality `args.we_dim`. Note that the `word_mapping`
+        # (tagger_we): Embed input words with dimensionality `args.we_dim`. Note that the `word_mapping`
         # provides a `vocabulary_size()` call returning the number of unique words in the mapping.
+        embeddings = tf.keras.layers.Embedding(train.forms.word_mapping.vocabulary_size(), args.we_dim)(words_indices)
 
-        # TODO(tagger_we): Create the specified `args.rnn_cell` RNN cell (LSTM, GRU) with
+        # (tagger_we): Create the specified `args.rnn_cell` RNN cell (LSTM, GRU) with
         # dimension `args.rnn_cell_dim`. The cell should produce an output for every
         # sequence element (so a 3D output). Then apply it in a bidirectional way on
         # the embedded words, **summing** the outputs of forward and backward RNNs.
+        if args.rnn_cell == 'LSTM':
+            cell_type = tf.keras.layers.LSTM
+        elif args.rnn_cell == 'GRU':
+            cell_type = tf.keras.layers.GRU
+        else:
+            raise NotImplementedError(f"{args.rnn_cell} is not a valid RNN cell")
+        rnn_forward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True)(embeddings)
+        rnn_backward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, go_backwards=True)(embeddings)
+        rnn_backward_seq = tf.reverse(rnn_backward_seq, axis=[1])
+        rnn_sequences = tf.keras.layers.Add()([rnn_forward_seq, rnn_backward_seq])
 
-        # TODO: Add a final classification layer into as many classes as there are unique
+        # : Add a final classification layer into as many classes as there are unique
         # tags in the `word_mapping` of `train.tags`. Note that **no activation** should
         # be used, the CRF operations will take care of it.
-        predictions = None
+        predictions = tf.keras.layers.Dense(train.tags.word_mapping.vocabulary_size())(rnn_sequences)
 
         # Check that the created predictions are a 3D tensor.
         assert predictions.shape.rank == 3
@@ -56,9 +68,11 @@ class Model(tf.keras.Model):
                      loss=self.crf_loss,
                      metrics=[self.SpanLabelingF1Metric(train.tags.word_mapping.get_vocabulary(), name="f1")])
 
-        # TODO: Create `self._crf_weights`, a trainable zero-initialized tf.float32 matrix variable
+        # : Create `self._crf_weights`, a trainable zero-initialized tf.float32 matrix variable
         # of size [number of unique train tags, number of unique train.tags], using `self.add_weight`.
-        self._crf_weights = self.add_weight(...)
+        self._crf_weights = self.add_weight("crf_weights", shape=[train.tags.word_mapping.vocabulary_size(),
+                                                                  train.tags.word_mapping.vocabulary_size()],
+                                            initializer=tf.initializers.Zeros(), dtype=tf.float32)
 
         self.tb_callback = tf.keras.callbacks.TensorBoard(args.logdir)
 
@@ -66,25 +80,32 @@ class Model(tf.keras.Model):
         assert isinstance(gold_labels, tf.RaggedTensor), "Gold labels given to CRF loss must be RaggedTensors"
         assert isinstance(logits, tf.RaggedTensor), "Logits given to CRF loss must be RaggedTensors"
 
-        # TODO: Use `tfa.text.crf_log_likelihood` to compute the CRF log likelihood.
+        # : Use `tfa.text.crf_log_likelihood` to compute the CRF log likelihood.
         # You will have to convert both logits and gold_labels to dense Tensors and
         # use `gold_labels.row_lengths()` as `sequence_length`. Use the `self._crf_weights`
         # as the transition weights.
         #
         # Finally, compute the loss using the computed log likelihoods, averaging the
         # individual batch examples.
-        raise NotImplementedError()
+        log_likelihood, _ = tfa.text.crf_log_likelihood(inputs=logits.to_tensor(), tag_indices=gold_labels.to_tensor(),
+                                                        sequence_lengths=gold_labels.row_lengths(),
+                                                        transition_params=self._crf_weights)
+        log_likelihood_avg = tf.math.reduce_mean(log_likelihood)
+        return log_likelihood_avg
 
     def crf_decode(self, logits: tf.RaggedTensor) -> tf.RaggedTensor:
         assert isinstance(logits, tf.RaggedTensor), "Logits given to CTC predict must be RaggedTensors"
 
-        # TODO: Perform CRF decoding using `tfa.text.crf_decode`. Convert the
+        # : Perform CRF decoding using `tfa.text.crf_decode`. Convert the
         # logits analogously as in `crf_loss`. Finally, convert the result
         # to a ragged tensor.
         #
         # Note: ignore the warning generated by tensorflow_addons/text/crf.py:540.
         # It does not apply to us, because we are passing a regular tensor to it.
-        predictions = ...
+        decode_tags, _ = tfa.text.crf_decode(potentials=logits.to_tensor(), transition_params=self._crf_weights,
+                                             sequence_length=...)
+        # https://www.tensorflow.org/addons/api_docs/python/tfa/text/crf_decode
+        predictions = tf.RaggedTensor.from_tensor(decode_tags, lengths=logits.row_lengths())
 
         assert isinstance(predictions, tf.RaggedTensor)
         return predictions
@@ -170,12 +191,12 @@ def main(args: argparse.Namespace) -> Dict[str, float]:
     # Create the model and train
     model = Model(args, morpho.train)
 
-    # TODO(tagger_we): Construct dataset for training, which should contain pairs of
+    # (tagger_we): Construct dataset for training, which should contain pairs of
     # - tensor of string words (forms) as input
     # - tensor of integral tag ids as targets.
     # To create the identifiers, use the `word_mapping` of `morpho.train.tags`.
     def tagging_dataset(example):
-        raise NotImplementedError()
+        return example['forms'], morpho.train.tags.word_mapping(example['tags'])
 
     def create_dataset(name):
         dataset = getattr(morpho, name).dataset
