@@ -216,8 +216,9 @@ class Model(tf.keras.Model):
         # Check that the created predictions are a 3D tensor.
         assert predictions.shape.rank == 3
         super().__init__(inputs=words, outputs=predictions)
+        self.ragged_loss = lambda yt, yp: tf.losses.SparseCategoricalCrossentropy()(yt.values, yp.values)
         self.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate),
-                     loss=lambda yt, yp: tf.losses.SparseCategoricalCrossentropy()(yt.values, yp.values),
+                     loss=self.ragged_loss,
                      metrics=[tf.metrics.SparseCategoricalAccuracy(name="accuracy")])
         # self.summary()
 
@@ -268,7 +269,8 @@ def main(args):
     os.makedirs(args.logdir, exist_ok=True)
 
     # use best checkpoint to make predictions
-    model = tf.keras.models.load_model(model.best_checkpoint_path)
+    model = tf.keras.models.load_model(model.best_checkpoint_path,
+                                       custom_objects={model.ragged_loss.__name__: model.ragged_loss})
 
     with open(os.path.join(args.logdir, "tagger_competition.txt"), "w", encoding="utf-8") as predictions_file:
         # : Predict the tags on the test set; update the following prediction
