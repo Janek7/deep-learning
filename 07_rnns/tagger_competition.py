@@ -27,6 +27,8 @@ parser.add_argument("--rnn_cell", default="LSTM", type=str, help="RNN cell type.
 parser.add_argument("--rnn_cell_dim", default=16, type=int, help="RNN cell dimension.")
 parser.add_argument("--we_dim", default=64, type=int, help="Word embedding dimension.")
 parser.add_argument("--word_masking", default=0.1, type=float, help="Mask words with the given probability.")
+parser.add_argument("--rnn_layers", default=3, type=int, help="Number of bidirectional rnn layers behind each other.")
+parser.add_argument("--rnn_residual", default="every", type=str, help="where to create a residual connection.")
 # C more params
 parser.add_argument("--l2", default=None, type=float, help="L2 regularization.")
 parser.add_argument("--decay", default="None", type=str, help="Learning decay rate type")
@@ -36,7 +38,7 @@ parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="F
 #   concat (concat to existing word embeddings)
 #   replace (replace existing word embeddings)
 #   None (not use it at all)
-parser.add_argument("--fasttext_mode", default="concat", type=str, help="How to use fast text.")
+parser.add_argument("--fasttext_mode", default=None, type=str, help="How to use fast text.")
 parser.add_argument("--fasttext_dim", default=100, type=int, help="Dimension of fasttext vectors.")
 
 
@@ -198,14 +200,19 @@ class Model(tf.keras.Model):
             cell_type = tf.keras.layers.GRU
         else:
             raise NotImplementedError(f"{args.rnn_cell} is not a valid RNN cell")
-        rnn_forward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, kernel_regularizer=reg)\
-            (concatted_embeddings)
-        rnn_backward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, kernel_regularizer=reg,
-                                     go_backwards=True)(concatted_embeddings)
-        rnn_backward_seq = tf.reverse(rnn_backward_seq, axis=[1])
-        rnn_sequences = tf.keras.layers.Add()([rnn_forward_seq, rnn_backward_seq])
-        # rnn_sequences = tf.keras.layers.Bidirectional(cell_type(units=args.rnn_cell_dim, return_sequences=True),
-        #                                               merge_mode='sum')(concatted_embeddings)
+
+        rnn_sequences = concatted_embeddings
+        rnn_sequences_previous = None
+        for i in range(args.rnn_layers):
+            rnn_sequences = tf.keras.layers.Bidirectional(cell_type(units=args.rnn_cell_dim, return_sequences=True),
+                                                           merge_mode='sum')(rnn_sequences)
+            if args.rnn_residual == "every" and rnn_sequences_previous is not None:
+                rnn_sequences = tf.keras.layers.Add(name=f"residual_connection_{i}")([rnn_sequences_previous, rnn_sequences])
+            # set previous sequence for next loop
+            rnn_sequences_previous = rnn_sequences
+
+        if args.rnn_residual == "end":  # does not work because Received shapes (None, 96) and (None, 16)
+            rnn_sequences = tf.keras.layers.Add(name="residual_connection")([concatted_embeddings, rnn_sequences])
 
         # (tagger_we): Add a softmax classification layer into as many classes as there are unique
         # tags in the `word_mapping` of `train.tags`. Note that the Dense layer can process
