@@ -67,8 +67,9 @@ def main(args: argparse.Namespace) -> None:
                                                row + square_anchor_size / 2,
                                                col + square_anchor_size / 2]], axis=0)
         anchors = np.delete(anchors, 0, 0)
+        # downscale anchors to 0-1
+        anchors /= args.image_size
         print("anchors:", anchors.shape)
-        # print(anchors)
         return anchors
 
     anchors = anchors_new()
@@ -130,7 +131,8 @@ def main(args: argparse.Namespace) -> None:
     if not args.decay or args.decay in ["None", "none"]:
         learning_rate = args.learning_rate
     else:
-        decay_steps = (len(train) / args.batch_size) * args.epochs
+        # note: train is already batched
+        decay_steps = len(train) * args.epochs
         if args.decay == 'linear':
             learning_rate = tf.keras.optimizers.schedules.PolynomialDecay(decay_steps=decay_steps,
                                                                           initial_learning_rate=args.learning_rate,
@@ -285,7 +287,7 @@ def main(args: argparse.Namespace) -> None:
 
     best_checkpoint_path = os.path.join(args.logdir, "svhn_competition.ckpt")
     model.fit(
-        train.take(1), batch_size=args.batch_size, epochs=args.epochs,
+        train, batch_size=args.batch_size, epochs=args.epochs,
         callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
                    tf.keras.callbacks.LambdaCallback(on_epoch_end=evaluate_dev),
                    tf.keras.callbacks.ModelCheckpoint(filepath=best_checkpoint_path,
