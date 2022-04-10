@@ -104,7 +104,6 @@ class Model(tf.keras.Model):
         # to a ragged tensor.
         decode_tags, _ = tfa.text.crf_decode(potentials=logits.to_tensor(), transition_params=self._crf_weights,
                                              sequence_length=logits.row_lengths())
-        # https://www.tensorflow.org/addons/api_docs/python/tfa/text/crf_decode
         predictions = tf.RaggedTensor.from_tensor(decode_tags, lengths=logits.row_lengths())
 
         assert isinstance(predictions, tf.RaggedTensor)
