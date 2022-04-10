@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+
+#CONTRIBUTORS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
+
+
 import argparse
 import datetime
 import os
@@ -16,19 +22,18 @@ from morpho_dataset import MorphoDataset
 # : Define reasonable defaults and optionally more parameters
 parser = argparse.ArgumentParser()
 # A standard params
-parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
-parser.add_argument("--seed", default=42, type=int, help="Random seed.")
+parser.add_argument("--batch_size", default=32, type=int, help="Batch size.")
+parser.add_argument("--epochs", default=100, type=int, help="Number of epochs.")
+parser.add_argument("--seed", default=32, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
 # B tagger_cle params
-parser.add_argument("--cle_dim", default=16, type=int, help="CLE embedding dimension.")
+parser.add_argument("--cle_dim", default=64, type=int, help="CLE embedding dimension.")
 parser.add_argument("--rnn_cell", default="LSTM", type=str, help="RNN cell type.")
-parser.add_argument("--rnn_cell_dim", default=16, type=int, help="RNN cell dimension.")
-parser.add_argument("--we_dim", default=64, type=int, help="Word embedding dimension.")
+parser.add_argument("--rnn_cell_dim", default=64, type=int, help="RNN cell dimension.")
+parser.add_argument("--we_dim", default=128, type=int, help="Word embedding dimension.")
 parser.add_argument("--word_masking", default=0.1, type=float, help="Mask words with the given probability.")
-parser.add_argument("--rnn_layers", default=1, type=int, help="Number of bidirectional rnn layers behind each other.")
-parser.add_argument("--rnn_residual", default=None, type=str, help="where to create a residual connection.")
+parser.add_argument("--dropout", default=0.3, type=int, help="Word embedding dimension.")
 # C more params
 parser.add_argument("--l2", default=None, type=float, help="L2 regularization.")
 parser.add_argument("--decay", default="None", type=str, help="Learning decay rate type")
@@ -38,8 +43,8 @@ parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="F
 #   concat (concat to existing word embeddings)
 #   replace (replace existing word embeddings)
 #   None (not use it at all)
-parser.add_argument("--fasttext_mode", default=None, type=str, help="How to use fast text.")
-parser.add_argument("--fasttext_dim", default=100, type=int, help="Dimension of fasttext vectors.")
+parser.add_argument("--fasttext_mode", default="replace", type=str, help="How to use fast text.")
+parser.add_argument("--fasttext_dim", default=300, type=int, help="Dimension of fasttext vectors.")
 
 
 # A layer retrieving fast text vectors for word.
@@ -75,12 +80,6 @@ class MaskElements(tf.keras.layers.Layer):
 
     def call(self, inputs, training):
         if training:
-            # : Generate as many random uniform numbers in range [0, 1) as there are
-            # values in `tf.RaggedTensor` `inputs` using a single `tf.random.uniform` call
-            # (without setting seed in any way, so with just a single parameter `shape`).
-            # Then, set the values in `inputs` to zero if the corresponding generated
-            # random number is less than `self._rate`.
-            # use tf.shape -> returns a now not known tensor (and different for each call)
             random = tf.random.uniform(shape=tf.shape(inputs.values))
             zero_and_ones = tf.cast(tf.math.greater_equal(random, tf.constant([self._rate])), tf.int64)
             inputs_masked = inputs.values * zero_and_ones
@@ -189,37 +188,23 @@ class Model(tf.keras.Model):
 
         # : Concatenate the word-level embeddings and the computed character-level WEs
         # (in this order).
-        concatted_embeddings = tf.keras.layers.Concatenate()([w_embeddings, word_cle_ragged])
+        layer = tf.keras.layers.Concatenate()([w_embeddings, word_cle_ragged])
 
         # (tagger_we): Create the specified `args.rnn_cell` RNN cell (LSTM, GRU) with
         # dimension `args.rnn_cell_dim`. The cell should produce an output for every
         # sequence element (so a 3D output). Then apply it in a bidirectional way on
         # the word representations, **summing** the outputs of forward and backward RNNs.
-        if args.rnn_cell == 'LSTM':
-            cell_type = tf.keras.layers.LSTM
-        elif args.rnn_cell == 'GRU':
-            cell_type = tf.keras.layers.GRU
+        if args.rnn_cell == "LSTM":
+            layer1 = tf.keras.layers.Bidirectional(layer = tf.keras.layers.LSTM(units = args.rnn_cell_dim, return_sequences = True), merge_mode='sum')(layer)
+            layer2 = tf.keras.layers.Bidirectional(layer = tf.keras.layers.LSTM(units = args.rnn_cell_dim, return_sequences = True), merge_mode='sum')(layer1)
+            layer = tf.keras.layers.Add()([layer1, layer2])
         else:
-            raise NotImplementedError(f"{args.rnn_cell} is not a valid RNN cell")
-
-        rnn_sequences = concatted_embeddings
-        rnn_sequences_previous = None
-        for i in range(args.rnn_layers):
-            rnn_sequences = tf.keras.layers.Bidirectional(cell_type(units=args.rnn_cell_dim, return_sequences=True),
-                                                           merge_mode='sum')(rnn_sequences)
-            if args.rnn_residual == "every" and rnn_sequences_previous is not None:
-                rnn_sequences = tf.keras.layers.Add(name=f"residual_connection_{i}")([rnn_sequences_previous, rnn_sequences])
-            # set previous sequence for next loop
-            rnn_sequences_previous = rnn_sequences
-
-        if args.rnn_residual == "end":  # does not work because Received shapes (None, 96) and (None, 16)
-            rnn_sequences = tf.keras.layers.Add(name="residual_connection")([concatted_embeddings, rnn_sequences])
-
-        # (tagger_we): Add a softmax classification layer into as many classes as there are unique
-        # tags in the `word_mapping` of `train.tags`. Note that the Dense layer can process
-        # a RaggedTensor without any problem.
-        predictions = tf.keras.layers.Dense(train.tags.word_mapping.vocabulary_size(), activation=tf.nn.softmax,
-                                            kernel_regularizer=reg)(rnn_sequences)
+            layer1 = tf.keras.layers.Bidirectional(layer = tf.keras.layers.LSTM(units = args.rnn_cell_dim, return_sequences = True), merge_mode='sum')(layer)
+            layer2 = tf.keras.layers.Bidirectional(layer = tf.keras.layers.LSTM(units = args.rnn_cell_dim, return_sequences = True), merge_mode='sum')(layer1)
+            layer = tf.keras.layers.Add()([layer1, layer2])
+        layer = tf.keras.layers.Dropout(args.dropout)(layer)
+        layer = tf.keras.layers.Dense(1024,'relu')(layer)
+        predictions = tf.keras.layers.Dense(train.tags.word_mapping.vocabulary_size(), activation = tf.nn.softmax)(layer)
 
         # Check that the created predictions are a 3D tensor.
         assert predictions.shape.rank == 3
@@ -233,10 +218,7 @@ class Model(tf.keras.Model):
         # define callbacks
         self.tb_callback = tf.keras.callbacks.TensorBoard(args.logdir)
         self.best_checkpoint_path = os.path.join(args.logdir, "tagger_competition.ckpt")
-        self.ckp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=self.best_checkpoint_path,
-                                                               save_weights_only=False, monitor='val_accuracy',
-                                                               mode='max', save_best_only=True)
-
+        self.ckp_callback = tf.keras.callbacks.EarlyStopping(monitor="val_accuracy", min_delta=1e-5, patience=10, verbose=0, mode="max", baseline=None, restore_best_weights=True)
 
 def main(args):
     # Fix random seeds and threads
@@ -269,16 +251,14 @@ def main(args):
 
     # : Create the model and train it
     model = Model(args, morpho.train, analyses)
-    print(args)
-    model.fit(train, epochs=args.epochs, validation_data=dev, callbacks=[model.tb_callback, model.ckp_callback])
-    print(args)
+
+    model.fit(train, epochs=args.epochs, validation_data=dev, callbacks=[model.tb_callback, model.ckp_callback], verbose = 2)
+
 
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
-
+    model.save(os.path.join(args.logdir, "tagger_competition.h5"), include_optimizer=True)
     # use best checkpoint to make predictions
-    model = tf.keras.models.load_model(model.best_checkpoint_path,
-                                       custom_objects={model.ragged_loss.__name__: model.ragged_loss})
 
     with open(os.path.join(args.logdir, "tagger_competition.txt"), "w", encoding="utf-8") as predictions_file:
         # : Predict the tags on the test set; update the following prediction
@@ -294,3 +274,4 @@ def main(args):
 if __name__ == "__main__":
     args = parser.parse_args([] if "__file__" not in globals() else None)
     main(args)
+

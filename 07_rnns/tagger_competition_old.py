@@ -13,9 +13,9 @@ import fasttext
 from morpho_analyzer import MorphoAnalyzer
 from morpho_dataset import MorphoDataset
 
+# : Define reasonable defaults and optionally more parameters
 parser = argparse.ArgumentParser()
-parser.add_argument("--log_dir", default="logs/tagger_competition.py-2022-04-06_214311-bs=32,cd=16,d=None,e=40,fd=100,fm=concat,l=0.0,lr=0.001,lrf=0.0001,r=False,rc=LSTM,rcd=16,s=42,t=1,wd=64,wm=0.1",
-                    type=str, help="Log dir from previous run")
+# A standard params
 parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
 parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
@@ -27,14 +27,19 @@ parser.add_argument("--rnn_cell", default="LSTM", type=str, help="RNN cell type.
 parser.add_argument("--rnn_cell_dim", default=16, type=int, help="RNN cell dimension.")
 parser.add_argument("--we_dim", default=64, type=int, help="Word embedding dimension.")
 parser.add_argument("--word_masking", default=0.1, type=float, help="Mask words with the given probability.")
+parser.add_argument("--rnn_layers", default=1, type=int, help="Number of bidirectional rnn layers behind each other.")
+parser.add_argument("--rnn_residual", default=None, type=str, help="where to create a residual connection.")
 # C more params
 parser.add_argument("--l2", default=None, type=float, help="L2 regularization.")
 parser.add_argument("--decay", default="None", type=str, help="Learning decay rate type")
 parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial learning rate.")
 parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
-parser.add_argument("--fasttext_mode", default="concat", type=str, help="How to use fast text.")
+# allowed values for 'fasttext_mode':
+#   concat (concat to existing word embeddings)
+#   replace (replace existing word embeddings)
+#   None (not use it at all)
+parser.add_argument("--fasttext_mode", default=None, type=str, help="How to use fast text.")
 parser.add_argument("--fasttext_dim", default=100, type=int, help="Dimension of fasttext vectors.")
-
 
 
 # A layer retrieving fast text vectors for word.
@@ -45,7 +50,8 @@ class FastText(tf.keras.layers.Layer):
         # load check model
         fasttext.util.download_model("cs", if_exists="ignore")
         self.ft = fasttext.load_model('cc.cs.300.bin')
-        fasttext.util.reduce_model(self.ft, dim)
+        if dim != 300:
+            fasttext.util.reduce_model(self.ft, dim)
 
     def get_config(self):
         return {"dim": self._dim}
@@ -195,14 +201,19 @@ class Model(tf.keras.Model):
             cell_type = tf.keras.layers.GRU
         else:
             raise NotImplementedError(f"{args.rnn_cell} is not a valid RNN cell")
-        rnn_forward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, kernel_regularizer=reg)\
-            (concatted_embeddings)
-        rnn_backward_seq = cell_type(units=args.rnn_cell_dim, return_sequences=True, kernel_regularizer=reg,
-                                     go_backwards=True)(concatted_embeddings)
-        rnn_backward_seq = tf.reverse(rnn_backward_seq, axis=[1])
-        rnn_sequences = tf.keras.layers.Add()([rnn_forward_seq, rnn_backward_seq])
-        # rnn_sequences = tf.keras.layers.Bidirectional(cell_type(units=args.rnn_cell_dim, return_sequences=True),
-        #                                               merge_mode='sum')(concatted_embeddings)
+
+        rnn_sequences = concatted_embeddings
+        rnn_sequences_previous = None
+        for i in range(args.rnn_layers):
+            rnn_sequences = tf.keras.layers.Bidirectional(cell_type(units=args.rnn_cell_dim, return_sequences=True),
+                                                           merge_mode='sum')(rnn_sequences)
+            if args.rnn_residual == "every" and rnn_sequences_previous is not None:
+                rnn_sequences = tf.keras.layers.Add(name=f"residual_connection_{i}")([rnn_sequences_previous, rnn_sequences])
+            # set previous sequence for next loop
+            rnn_sequences_previous = rnn_sequences
+
+        if args.rnn_residual == "end":  # does not work because Received shapes (None, 96) and (None, 16)
+            rnn_sequences = tf.keras.layers.Add(name="residual_connection")([concatted_embeddings, rnn_sequences])
 
         # (tagger_we): Add a softmax classification layer into as many classes as there are unique
         # tags in the `word_mapping` of `train.tags`. Note that the Dense layer can process
@@ -233,6 +244,13 @@ def main(args):
     tf.config.threading.set_inter_op_parallelism_threads(args.threads)
     tf.config.threading.set_intra_op_parallelism_threads(args.threads)
 
+    # Create logdir name
+    args.logdir = os.path.join("logs", "{}-{}-{}".format(
+        os.path.basename(globals().get("__file__", "notebook")),
+        datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S"),
+        ",".join(("{}={}".format(re.sub("(.)[^_]*_?", r"\1", k), v) for k, v in sorted(vars(args).items())))
+    ))
+
     # Load the data. Using analyses is only optional.
     morpho = MorphoDataset("czech_pdt")
     analyses = MorphoAnalyzer("czech_pdt_analyses")
@@ -247,12 +265,19 @@ def main(args):
         dataset = dataset.apply(tf.data.experimental.dense_to_ragged_batch(args.batch_size))
         return dataset
 
-    test = create_dataset("test")
-    # create only to have access to .ragged_loss
+    train, dev, test = create_dataset("train"), create_dataset("dev"), create_dataset("test")
+
+    # : Create the model and train it
     model = Model(args, morpho.train, analyses)
+    print(args)
+    model.fit(train, epochs=args.epochs, validation_data=dev, callbacks=[model.tb_callback, model.ckp_callback])
+    print(args)
+
+    # Generate test set annotations, but in `args.logdir` to allow parallel execution.
+    os.makedirs(args.logdir, exist_ok=True)
 
     # use best checkpoint to make predictions
-    model = tf.keras.models.load_model(os.path.join(args.logdir, "tagger_competition.ckpt"),
+    model = tf.keras.models.load_model(model.best_checkpoint_path,
                                        custom_objects={model.ragged_loss.__name__: model.ragged_loss})
 
     with open(os.path.join(args.logdir, "tagger_competition.txt"), "w", encoding="utf-8") as predictions_file:
