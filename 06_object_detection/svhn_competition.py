@@ -32,7 +32,7 @@ parser.add_argument("--image_size", default=224, type=int, help="Width and heigh
 parser.add_argument("--conv_filters", default=256, type=int, help="Number of filters in conv layers in heads.")
 parser.add_argument("--iou_threshold", default=0.5, type=float, help="Threshold to assign anchors to gold bboxes.")
 parser.add_argument("--iou_prediction", default=0.5, type=float, help="Threshold for non max suppresion.")
-parser.add_argument("--score_threshold", default=0.2, type=float, help="Score threshold for non max suppresion.")
+parser.add_argument("--score_threshold", default=0.4, type=float, help="Score threshold for non max suppresion.")
 
 parser.add_argument("--batch_norm", default=True, type=bool, help="Batch normalization of conv. layers.")
 parser.add_argument("--dropout", default=0.5, type=float, help="Dropout rate after efficient net layer.")
