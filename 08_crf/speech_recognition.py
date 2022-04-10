@@ -16,7 +16,7 @@ from common_voice_cs import CommonVoiceCs
 # : Define reasonable defaults and optionally more parameters
 # standard params
 parser = argparse.ArgumentParser()
-parser.add_argument("--batch_size", default=10, type=int, help="Batch size.")
+parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
 parser.add_argument("--epochs", default=2, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
@@ -25,11 +25,11 @@ parser.add_argument("--rnn_cell", default="LSTM", type=str, help="RNN cell type.
 parser.add_argument("--rnn_cell_dim", default=16, type=int, help="RNN cell dimension.")
 parser.add_argument("--rnn_bidirectional_merge", default="sum", type=str, help="Bidirectional merge mode")
 parser.add_argument("--rnn_layers", default=1, type=int, help="Number of bidirectional rnn layers behind each other.")
-parser.add_argument("--rnn_residual", default=None, type=str, help="where to create a residual connection.")
+parser.add_argument("--rnn_residual", default=False, type=bool, help="Create residual connections")
 # regularization params
 parser.add_argument("--batch_norm", default=True, type=bool, help="Batch norm after input")
 parser.add_argument("--l2", default=0.00, type=float, help="L2 regularization.")
-parser.add_argument("--decay", default="cosine", type=str, help="Learning decay rate type")
+parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
 parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial learning rate.")
 parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
 
@@ -138,7 +138,7 @@ class Model(tf.keras.Model):
                                 logits_time_major=False,
                                 # TODO: set correctly?
                                 blank_index=len(CommonVoiceCs.LETTERS))
-        avg_result = tf.math.reduce_mean(-result)
+        avg_result = tf.math.reduce_mean(result)
         return avg_result
 
     def ctc_decode(self, logits: tf.RaggedTensor) -> tf.RaggedTensor:
@@ -220,15 +220,15 @@ def main(args: argparse.Namespace) -> None:
     # : Create the model and train it
     model = Model(args, train)
 
-    best_checkpoint_path = "C:\\Users\\janek\\Development\\Git\\Prag\\deep-learning-lecture\\08_crf\\logs\\speech_recognition.py-2022-04-10_153538-bn=True,bs=10,d=cosine,e=2,l=0.0,lr=0.001,lrf=0.0001,rbm=sum,rc=LSTM,rcd=16,rl=1,rr=None,s=42,t=1\\speech_recognition.ckpt"
-    # best_checkpoint_path = os.path.join(args.logdir, "speech_recognition.ckpt")
-    # model.fit(
-    #     train.take(10), batch_size=args.batch_size, epochs=args.epochs, validation_data=dev.take(10),
-    #     callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
-    #                tf.keras.callbacks.ModelCheckpoint(filepath=best_checkpoint_path,
-    #                                                   save_weights_only=False, monitor='val_accuracy',
-    #                                                   mode='max', save_best_only=True)]
-    # )
+    # best_checkpoint_path = "C:\\Users\\janek\\Development\\Git\\Prag\\deep-learning-lecture\\08_crf\\logs\\speech_recognition.py-2022-04-10_153538-bn=True,bs=10,d=cosine,e=2,l=0.0,lr=0.001,lrf=0.0001,rbm=sum,rc=LSTM,rcd=16,rl=1,rr=None,s=42,t=1\\speech_recognition.ckpt"
+    best_checkpoint_path = os.path.join(args.logdir, "speech_recognition.ckpt")
+    model.fit(
+        train, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
+        callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
+                   tf.keras.callbacks.ModelCheckpoint(filepath=best_checkpoint_path,
+                                                      save_weights_only=False, monitor='val_accuracy',
+                                                      mode='max', save_best_only=True)]
+    )
 
     try:
         custom_objects = {
@@ -243,7 +243,7 @@ def main(args: argparse.Namespace) -> None:
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
     with open(os.path.join(args.logdir, "speech_recognition.txt"), "w", encoding="utf-8") as predictions_file:
-        predictions = best_model.predict(test.take(1))
+        predictions = best_model.predict(test)
         for sentence in predictions:
             # sentence: eager tensor with shape [chars, LETTERS] -> probability of LETTERS for each char
             # -> get arg max of each char probability distribution? TODO: negative values possible?
