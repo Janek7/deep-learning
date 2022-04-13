@@ -22,7 +22,7 @@ from svhn_dataset import SVHN
 # : Define reasonable defaults and optionally more parameters
 parser = argparse.ArgumentParser()
 parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=2, type=int, help="Number of epochs.")
+parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 
@@ -43,6 +43,7 @@ parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="F
 
 
 def main(args: argparse.Namespace) -> None:
+    print(args)
     # Fix random seeds and threads
     np.random.seed(args.seed)
     tf.random.set_seed(args.seed)
@@ -225,26 +226,15 @@ def main(args: argparse.Namespace) -> None:
             classes, bboxes = y_pred["classes"], y_pred["bboxes"]
 
             # transform bboxes after NN back to normal representation
-            # tf.print("bboxes shape", tf.shape(bboxes))
             bboxes = tf.numpy_function(
                 self.bboxes_from_fast_rcnn_batch,  # name
                 [anchors, bboxes],  # param values
                 (tf.float32)  # return types
             )
-            # tf.print("bboxes shape after transform", tf.shape(bboxes))
-            # tf.print("classes shape", tf.shape(classes))
 
             # non max suppression
             bboxes, scores, classes, valid_detections = tf.image.combined_non_max_suppression(
                 bboxes[:, :, tf.newaxis], classes, 5, 5, args.iou_prediction, score_threshold=args.score_threshold)
-            # tf.print("---------")
-            # tf.print("valid_detections.shape", tf.shape(valid_detections))
-            # tf.print(valid_detections)
-            # tf.print(tf.unique(valid_detections))
-            # tf.print("---------")
-            # tf.print("bboxes.shape", tf.shape(bboxes))
-            # tf.print("bboxes", bboxes)
-            # tf.print("---------")
 
             # resize bboxes to original size
             bboxes *= tf.cast(sizes[:, 0], tf.float32)[:, tf.newaxis, tf.newaxis]
@@ -286,18 +276,26 @@ def main(args: argparse.Namespace) -> None:
             logs.update({"val_accuracy": accuracy})
 
     best_checkpoint_path = os.path.join(args.logdir, "svhn_competition.ckpt")
-    model.fit(
-        train, batch_size=args.batch_size, epochs=args.epochs,
-        callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
-                   tf.keras.callbacks.LambdaCallback(on_epoch_end=evaluate_dev),
-                   tf.keras.callbacks.ModelCheckpoint(filepath=best_checkpoint_path,
-                                                      save_weights_only=False, monitor='val_accuracy',
-                                                      mode='max', save_best_only=True)]
-    )
+    try:
+        model.fit(
+            train, batch_size=args.batch_size, epochs=args.epochs,
+            callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
+                       tf.keras.callbacks.LambdaCallback(on_epoch_end=evaluate_dev),
+                       tf.keras.callbacks.ModelCheckpoint(filepath=best_checkpoint_path,
+                                                          save_weights_only=True, monitor='val_accuracy',
+                                                          mode='max', save_best_only=True)]
+        )
+    except Exception as e:
+        # just in case of memory problems on AIC
+        print(e)
+        print("model training stopped with exception")
+    print(args)
 
     # 7) predict test set with best model stored in checkpoint
-    best_model = tf.keras.models.load_model(best_checkpoint_path)
-    create_predictions(best_model, test, "svhn_competition.txt")
+    print("load best model")
+    model.load_weights(best_checkpoint_path)
+    print("create test set predictions")
+    create_predictions(model, test, "svhn_competition.txt")
 
 
 if __name__ == "__main__":
