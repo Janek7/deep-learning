@@ -8,18 +8,20 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Report only TF errors by d
 
 import numpy as np
 import tensorflow as tf
+# TODO
+tf.config.run_functions_eagerly(True)
 import tensorflow_addons as tfa
 
 from morpho_dataset import MorphoDataset
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
-parser.add_argument("--batch_size", default=10, type=int, help="Batch size.")
-parser.add_argument("--cle_dim", default=64, type=int, help="CLE embedding dimension.")
-parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
-parser.add_argument("--max_sentences", default=None, type=int, help="Maximum number of sentences to load.")
+parser.add_argument("--batch_size", default=2, type=int, help="Batch size.")
+parser.add_argument("--cle_dim", default=32, type=int, help="CLE embedding dimension.")
+parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
+parser.add_argument("--max_sentences", default=500, type=int, help="Maximum number of sentences to load.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
-parser.add_argument("--rnn_dim", default=64, type=int, help="RNN cell dimension.")
+parser.add_argument("--rnn_dim", default=32, type=int, help="RNN cell dimension.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # If you add more arguments, ReCodEx will keep them with your default values.
@@ -34,15 +36,20 @@ class Model(tf.keras.Model):
         self.target_mapping_inverse = type(self.target_mapping)(
             vocabulary=self.target_mapping.get_vocabulary(), invert=True)
 
-        # TODO: Define
+        # : Define
         # - `self.source_embedding` as an embedding layer of source chars into `args.cle_dim` dimensions
         # - `self.source_rnn` as a bidirectional GRU with `args.rnn_dim` units, returning only the last output,
         #   summing opposite directions
+        self.source_embedding = tf.keras.layers.Embedding(self.source_mapping.vocabulary_size(), args.cle_dim)
+        self.source_rnn = tf.keras.layers.Bidirectional(tf.keras.layers.GRU(args.rnn_dim), merge_mode='sum')
 
-        # TODO: Then define
+        # : Then define
         # - `self.target_embedding` as an embedding layer of target chars into `args.cle_dim` dimensions
         # - `self.target_rnn_cell` as a GRUCell with `args.rnn_dim` units
         # - `self.target_output_layer` as a Dense layer into as many outputs as there are unique target chars
+        self.target_embedding = tf.keras.layers.Embedding(self.target_mapping.vocabulary_size(), args.cle_dim)
+        self.target_rnn_cell = tf.keras.layers.GRUCell(args.rnn_dim)
+        self.target_output_layer = tf.keras.layers.Dense(self.target_mapping.vocabulary_size())
 
         # Compile the model
         self.compile(
@@ -54,82 +61,104 @@ class Model(tf.keras.Model):
         self.tb_callback = tf.keras.callbacks.TensorBoard(args.logdir)
 
     class DecoderTraining(tfa.seq2seq.BaseDecoder):
+        """
+        returns predicted indices at inference
+        """
         def __init__(self, lemmatizer, *args, **kwargs):
             self.lemmatizer = lemmatizer
             super().__init__.__wrapped__(self, *args, **kwargs)
 
         @property
         def batch_size(self):
-            # TODO: Return the batch size of `self.source_states` as a *scalar* number;
+            # : Return the batch size of `self.source_states` as a *scalar* number;
             # use `tf.shape` to get the full shape and then extract the batch size.
-            raise NotImplementedError()
+            return tf.shape(self.source_states)[0]
+
         @property
         def output_size(self):
-            # TODO: Describe the size of a single decoder output (batch size and the
+            # : Describe the size of a single decoder output (batch size and the
             # sequence length are not included) by returning
             #   tf.TensorShape(number of logits of each output element [lemma character])
-            raise NotImplementedError()
+            return tf.TensorShape([self.lemmatizer.target_mapping.vocabulary_size()])
+
         @property
         def output_dtype(self):
-            # TODO: Return the type of the decoder output (so the type of the
-            # produced logits).
-            raise NotImplementedError()
+            # : Return the type of the decoder output (so the type of the produced logits).
+            return tf.float32
 
         def initialize(self, layer_inputs, initial_state=None):
             self.source_states, self.targets = layer_inputs
 
-            # TODO: Define `finished` as a vector of self.batch_size of `False` [see tf.fill].
+            # : Define `finished` as a vector of self.batch_size of `False` [see tf.fill].
+            finished = tf.fill([self.batch_size], False)
 
-            # TODO: Define `inputs` as a vector of self.batch_size of MorphoDataset.Factor.BOW,
+            # : Define `inputs` as a vector of self.batch_size of MorphoDataset.Factor.BOW,
             # embedded using self.lemmatizer.target_embedding
+            inputs = self.lemmatizer.target_embedding(tf.fill([self.batch_size], MorphoDataset.Factor.BOW))
 
-            # TODO: Define `states` as self.source_states
+            # : Define `states` as self.source_states
+            states = self.source_states
 
             return finished, inputs, states
 
         def step(self, time, inputs, states, training):
-            # TODO: Pass `inputs` and `[states]` through self.lemmatizer.target_rnn_cell,
+            # : Pass `inputs` and `[states]` through self.lemmatizer.target_rnn_cell,
             # which returns `(outputs, [states])`.
+            outputs, [states] = self.lemmatizer.target_rnn_cell(inputs, [states])
 
-            # TODO: Overwrite `outputs` by passing them through self.lemmatizer.target_output_layer,
+            # : Overwrite `outputs` by passing them through self.lemmatizer.target_output_layer,
+            outputs = self.lemmatizer.target_output_layer(outputs)
 
-            # TODO: Define `next_inputs` by embedding `time`-th chars from `self.targets`.
+            # : Define `next_inputs` by embedding `time`-th chars from `self.targets`.
+            # [:, time] -> : is full batch dim; only time-th letter -> this includes all before because of transitive
+            # dependencies of the predictions
+            next_inputs = self.lemmatizer.target_embedding(self.targets[:, time])
 
-            # TODO: Define `finished` as a vector of booleans; True if the corresponding
+            # : Define `finished` as a vector of booleans; True if the corresponding
             # `time`-th char from `self.targets` is `MorphoDataset.Factor.EOW`, False otherwise.
+            finished = tf.math.equal(self.targets[:, time], MorphoDataset.Factor.EOW)
 
             return outputs, states, next_inputs, finished
 
     class DecoderPrediction(DecoderTraining):
+        """
+        returns predicted indices at inference
+        """
         @property
         def output_size(self):
-            # TODO: Describe the size of a single decoder output (batch size and the
+            # : Describe the size of a single decoder output (batch size and the
             # sequence length are not included) by returning a suitable
             # `tf.TensorShape` representing a *scalar* element, because we are producing
             # lemma character indices during prediction.
-            raise NotImplementedError()
+            return tf.TensorShape([])
+
         @property
         def output_dtype(self):
-            # TODO: Return the type of the decoder output (i.e., target lemma character indices).
-            raise NotImplementedError()
+            # : Return the type of the decoder output (i.e., target lemma character indices).
+            return tf.int32
 
         def initialize(self, layer_inputs, initial_state=None):
             # Use `initialize` from the DecoderTraining, passing None as targets
             return super().initialize([layer_inputs, None], initial_state)
 
         def step(self, time, inputs, states, training):
-            # TODO(DecoderTraining): Pass `inputs` and `[states]` through self.lemmatizer.target_rnn_cell,
+            # (DecoderTraining): Pass `inputs` and `[states]` through self.lemmatizer.target_rnn_cell,
             # which returns `(outputs, [states])`.
+            outputs, [states] = self.lemmatizer.target_rnn_cell(inputs, [states])
 
-            # TODO(DecoderTraining): Overwrite `outputs` by passing them through self.lemmatizer.target_output_layer,
+            # : Overwrite `outputs` by passing them through self.lemmatizer.target_output_layer,
+            outputs = self.lemmatizer.target_output_layer(outputs)
 
-            # TODO: Overwrite `outputs` by passing them through `tf.argmax` on suitable axis and with
+            # : Overwrite `outputs` by passing them through `tf.argmax` on suitable axis and with
             # `output_type=tf.int32` parameter.
+            outputs = tf.math.argmax(outputs, axis=1, output_type=tf.int32)
 
-            # TODO: Define `next_inputs` by embedding the `outputs`
+            # : Define `next_inputs` by embedding the `outputs`
+            next_inputs = self.lemmatizer.target_embedding(outputs)
 
-            # TODO: Define `finished` as a vector of booleans; True if the corresponding
+            # : Define `finished` as a vector of booleans; True if the corresponding
             # prediction in `outputs` is `MorphoDataset.Factor.EOW`, False otherwise.
+            finished = tf.math.equal(outputs, MorphoDataset.Factor.EOW)
 
             return outputs, states, next_inputs, finished
 
@@ -151,20 +180,23 @@ class Model(tf.keras.Model):
             target_charseqs = targets.values
             target_charseqs = target_charseqs.to_tensor()
 
-        # TODO: Embed source_charseqs using `source_embedding`
+        # : Embed source_charseqs using `source_embedding`
+        source_charseqs_embeddings = self.source_embedding(source_charseqs)
 
-        # TODO: Run source_rnn on the embedded sequences, returning outputs in `source_states`.
-        sources_states = None
+        # : Run source_rnn on the embedded sequences, returning outputs in `source_states`.
+        sources_states = self.source_rnn(source_charseqs_embeddings)
 
         # Run the appropriate decoder. Note that the outputs of the decoders
         # are exactly the outputs of `tfa.seq2seq.dynamic_decode`.
         if targets is not None:
-            # TODO: Create a self.DecoderTraining by passing `self` to its constructor.
+            # : Create a self.DecoderTraining by passing `self` to its constructor.
             # Then run it on `[source_states, target_charseqs]` input,
             # storing the first result in `output` and the third result in `output_lens`.
-            raise NotImplementedError()
+            decoder_training = self.DecoderTraining(self)
+            result = decoder_training([sources_states, target_charseqs])
+            output, output_lens = result[0], result[2]
         else:
-            # TODO: Create a self.DecoderPrediction by using:
+            # : Create a self.DecoderPrediction by using:
             # - `self` as first argument to its constructor
             # - `maximum_iterations=tf.cast(source_charseqs.bounding_shape(1) + 10, tf.int32)`
             #   as another argument, which indicates that the longest prediction
@@ -173,7 +205,11 @@ class Model(tf.keras.Model):
             # Then run it on `source_states`, storing the first result in `output`
             # and the third result in `output_lens`. Finally, because we do not want
             # to return the `[EOW]` symbols, decrease `output_lens` by one.
-            raise NotImplementedError()
+            decoder_prediction = self.DecoderPrediction(self,  maximum_iterations=tf.cast(
+                source_charseqs.bounding_shape(1) + 10, tf.int32))
+            result = decoder_prediction(sources_states)
+            output, output_lens = result[0], result[2]
+            output_lens -= 1
 
         # Reshape the output to the original matrix of lemmas
         # and explicitly set mask for loss and metric computation.
