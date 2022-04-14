@@ -34,17 +34,23 @@ class Model(tf.keras.Model):
         self.target_mapping_inverse = type(self.target_mapping)(
             vocabulary=self.target_mapping.get_vocabulary(), invert=True)
 
-        # TODO(lemmatizer_noattn): Define
+        # (lemmatizer_noattn): Define
         # - `self.source_embedding` as an embedding layer of source chars into `args.cle_dim` dimensions
+        self.source_embedding = tf.keras.layers.Embedding(self.source_mapping.vocabulary_size(), args.cle_dim)
 
-        # TODO: Define
+        # : Define
         # - `self.source_rnn` as a bidirectional GRU with `args.rnn_dim` units, returning **whole sequences**,
         #   summing opposite directions
+        self.source_rnn = tf.keras.layers.Bidirectional(tf.keras.layers.GRU(args.rnn_dim, return_sequences=True),
+                                                        merge_mode='sum')
 
-        # TODO(lemmatizer_noattn): Then define
+        # (lemmatizer_noattn): Then define
         # - `self.target_embedding` as an embedding layer of target chars into `args.cle_dim` dimensions
         # - `self.target_rnn_cell` as a GRUCell with `args.rnn_dim` units
         # - `self.target_output_layer` as a Dense layer into as many outputs as there are unique target chars
+        self.target_embedding = tf.keras.layers.Embedding(self.target_mapping.vocabulary_size(), args.cle_dim)
+        self.target_rnn_cell = tf.keras.layers.GRUCell(args.rnn_dim)
+        self.target_output_layer = tf.keras.layers.Dense(self.target_mapping.vocabulary_size())
 
         # TODO: Define
         # - `self.attention_source_layer` as a Dense layer with `args.rnn_dim` outputs
@@ -67,20 +73,21 @@ class Model(tf.keras.Model):
 
         @property
         def batch_size(self):
-            # TODO(lemmatizer_noattn): Return the batch size of `self.source_states` as a *scalar* number;
+            # (lemmatizer_noattn): Return the batch size of `self.source_states` as a *scalar* number;
             # use `tf.shape` to get the full shape and then extract the batch size.
-            raise NotImplementedError()
+            return tf.shape(self.source_states)[0]
+
         @property
         def output_size(self):
-            # TODO(lemmatizer_noattn): Describe the size of a single decoder output (batch size and the
+            # (lemmatizer_noattn): Describe the size of a single decoder output (batch size and the
             # sequence length are not included) by returning
             #   tf.TensorShape(number of logits of each output element [lemma character])
             raise NotImplementedError()
         @property
         def output_dtype(self):
-            # TODO(lemmatizer_noattn): Return the type of the decoder output (so the type of the
+            # (lemmatizer_noattn): Return the type of the decoder output (so the type of the
             # produced logits).
-            raise NotImplementedError()
+            return tf.TensorShape([self.lemmatizer.target_mapping.vocabulary_size()])
 
         def with_attention(self, inputs, states):
             # TODO: Compute the attention.
@@ -103,10 +110,12 @@ class Model(tf.keras.Model):
         def initialize(self, layer_inputs, initial_state=None, mask=None):
             self.source_states, self.targets = layer_inputs
 
-            # TODO(lemmatizer_noattn): Define `finished` as a vector of self.batch_size of `False` [see tf.fill].
+            # (lemmatizer_noattn): Define `finished` as a vector of self.batch_size of `False` [see tf.fill].
+            finished = tf.fill([self.batch_size], False)
 
-            # TODO(lemmatizer_noattn): Define `inputs` as a vector of self.batch_size of MorphoDataset.Factor.BOW,
+            # (lemmatizer_noattn): Define `inputs` as a vector of self.batch_size of MorphoDataset.Factor.BOW,
             # embedded using self.lemmatizer.target_embedding
+            inputs = self.lemmatizer.target_embedding(tf.fill([self.batch_size], MorphoDataset.Factor.BOW))
 
             # TODO: Define `states` as the representation of the first character
             # in `source_states`. The idea is that it is most relevant for generating
@@ -117,15 +126,19 @@ class Model(tf.keras.Model):
             return finished, inputs, states
 
         def step(self, time, inputs, states, training):
-            # TODO(lemmatizer_noattn): Pass `inputs` and `[states]` through self.lemmatizer.target_rnn_cell,
+            # (lemmatizer_noattn): Pass `inputs` and `[states]` through self.lemmatizer.target_rnn_cell,
             # which returns `(outputs, [states])`.
+            outputs, [states] = self.lemmatizer.target_rnn_cell(inputs, [states])
 
-            # TODO(lemmatizer_noattn): Overwrite `outputs` by passing them through self.lemmatizer.target_output_layer,
+            # (lemmatizer_noattn): Overwrite `outputs` by passing them through self.lemmatizer.target_output_layer,
+            outputs = self.lemmatizer.target_output_layer(outputs)
 
-            # TODO(lemmatizer_noattn): Define `next_inputs` by embedding `time`-th chars from `self.targets`.
+            # (lemmatizer_noattn): Define `next_inputs` by embedding `time`-th chars from `self.targets`.
+            next_inputs = self.lemmatizer.target_embedding(self.targets[:, time])
 
-            # TODO(lemmatizer_noattn): Define `finished` as a vector of booleans; True if the corresponding
+            # (lemmatizer_noattn): Define `finished` as a vector of booleans; True if the corresponding
             # `time`-th char from `self.targets` is `MorphoDataset.Factor.EOW`, False otherwise.
+            finished = tf.math.equal(self.targets[:, time], MorphoDataset.Factor.EOW)
 
             # TODO: Pass `next_inputs` through `self.with_attention(next_inputs, states)`.
 
@@ -134,33 +147,39 @@ class Model(tf.keras.Model):
     class DecoderPrediction(DecoderTraining):
         @property
         def output_size(self):
-            # TODO: Describe the size of a single decoder output (batch size and the
+            # (lemmatizer_noattn): Describe the size of a single decoder output (batch size and the
             # sequence length are not included) by returning a suitable
             # `tf.TensorShape` representing a *scalar* element, because we are producing
             # lemma character indices during prediction.
-            raise NotImplementedError()
+            return tf.TensorShape([])
+
         @property
         def output_dtype(self):
-            # TODO: Return the type of the generated predictions
-            raise NotImplementedError()
+            # (lemmatizer_noattn): Return the type of the decoder output (i.e., target lemma character indices).
+            return tf.int32
 
         def initialize(self, layer_inputs, initial_state=None, mask=None):
             # Use `initialize` from the DecoderTraining, passing None as targets
             return super().initialize([layer_inputs, None], initial_state)
 
         def step(self, time, inputs, states, training):
-            # TODO(lemmatizer_noattn): Pass `inputs` and `[states]` through self.lemmatizer.target_rnn_cell,
+            # (lemmatizer_noattn): Pass `inputs` and `[states]` through self.lemmatizer.target_rnn_cell,
             # which returns `(outputs, [states])`.
+            outputs, [states] = self.lemmatizer.target_rnn_cell(inputs, [states])
 
-            # TODO(lemmatizer_noattn): Overwrite `outputs` by passing them through self.lemmatizer.target_output_layer,
+            # (lemmatizer_noattn): Overwrite `outputs` by passing them through self.lemmatizer.target_output_layer,
+            outputs = self.lemmatizer.target_output_layer(outputs)
 
-            # TODO(lemmatizer_noattn): Overwrite `outputs` by passing them through `tf.argmax` on suitable axis and with
+            # (lemmatizer_noattn): Overwrite `outputs` by passing them through `tf.argmax` on suitable axis and with
             # `output_type=tf.int32` parameter.
+            outputs = tf.math.argmax(outputs, axis=1, output_type=tf.int32)
 
-            # TODO(lemmatizer_noattn): Define `next_inputs` by embedding the `outputs`
+            # lemmatizer_noattn): Define `next_inputs` by embedding the `outputs`
+            next_inputs = self.lemmatizer.target_embedding(outputs)
 
-            # TODO(lemmatizer_noattn): Define `finished` as a vector of booleans; True if the corresponding
+            # (lemmatizer_noattn): Define `finished` as a vector of booleans; True if the corresponding
             # prediction in `outputs` is `MorphoDataset.Factor.EOW`, False otherwise.
+            finished = tf.math.equal(outputs, MorphoDataset.Factor.EOW)
 
             # TODO(DecoderTraining): Pass `next_inputs` through `self.with_attention(next_inputs, states)`.
 
@@ -184,7 +203,8 @@ class Model(tf.keras.Model):
             target_charseqs = targets.values
             target_charseqs = target_charseqs.to_tensor()
 
-        # TODO(lemmatizer_noattn): Embed source_charseqs using `source_embedding`
+        # (lemmatizer_noattn): Embed source_charseqs using `source_embedding`
+        source_charseqs_embeddings = self.source_embedding(source_charseqs)
 
         # TODO: Run source_rnn on the embedded sequences, returning outputs in `source_states`.
         # However, convert the embedded sequences from a RaggedTensor to a dense Tensor first,
@@ -195,12 +215,14 @@ class Model(tf.keras.Model):
         # Run the appropriate decoder. Note that the outputs of the decoders
         # are exactly the outputs of `tfa.seq2seq.dynamic_decode`.
         if targets is not None:
-            # TODO(lemmatizer_noattn): Create a self.DecoderTraining by passing `self` to its constructor.
+            # (lemmatizer_noattn): Create a self.DecoderTraining by passing `self` to its constructor.
             # Then run it on `[source_states, target_charseqs]` input,
             # storing the first result in `output` and the third result in `output_lens`.
-            raise NotImplementedError()
+            decoder_training = self.DecoderTraining(self)
+            result = decoder_training([sources_states, target_charseqs])
+            output, output_lens = result[0], result[2]
         else:
-            # TODO(lemmatizer_noattn): Create a self.DecoderPrediction by using:
+            # (lemmatizer_noattn): Create a self.DecoderPrediction by using:
             # - `self` as first argument to its constructor
             # - `maximum_iterations=tf.cast(source_charseqs.bounding_shape(1) + 10, tf.int32)`
             #   as another argument, which indicates that the longest prediction
@@ -209,7 +231,11 @@ class Model(tf.keras.Model):
             # Then run it on `source_states`, storing the first result in `output`
             # and the third result in `output_lens`. Finally, because we do not want
             # to return the `[EOW]` symbols, decrease `output_lens` by one.
-            raise NotImplementedError()
+            decoder_prediction = self.DecoderPrediction(self, maximum_iterations=tf.cast(
+                source_charseqs.bounding_shape(1) + 10, tf.int32))
+            result = decoder_prediction(sources_states)
+            output, output_lens = result[0], result[2]
+            output_lens -= 1
 
         # Reshape the output to the original matrix of lemmas
         # and explicitly set mask for loss and metric computation.
