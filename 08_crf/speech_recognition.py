@@ -29,16 +29,17 @@ parser.add_argument("--rnn_layers", default=1, type=int, help="Number of bidirec
 parser.add_argument("--rnn_residual", default=False, type=bool, help="Create residual connections")
 # regularization params
 parser.add_argument("--batch_norm", default=True, type=bool, help="Batch norm after input")
-parser.add_argument("--dropout", default=0.5, type=float, help="Dropout rate.")
+parser.add_argument("--dropout", default=0, type=float, help="Dropout rate.")
+parser.add_argument("--dropout_rnn", default=0, type=float, help="Dropout rate.")
 parser.add_argument("--l2", default=0.00, type=float, help="L2 regularization.")
 parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
 parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial learning rate.")
 parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
 
-# TODO: try merge modes
+# TODO: try merge modes, done
 # TODO: try label smoothing (between .01 and .1)
 # TODO: cosine at the end
-# TODO: dropout element in LSTM layer
+# TODO: dropout element in LSTM layer, done
 
 class Model(tf.keras.Model):
     def __init__(self, args: argparse.Namespace, train: tf.data.Dataset) -> None:
@@ -87,7 +88,8 @@ class Model(tf.keras.Model):
         rnn_sequences_previous = None
         for i in range(args.rnn_layers):
             rnn_sequences = tf.keras.layers.Bidirectional(cell_type(units=args.rnn_cell_dim, return_sequences=True,
-                                                                    kernel_regularizer=reg),
+                                                                    kernel_regularizer=reg,
+                                                                    recurrent_dropout=args.dropout_rnn),
                                                           merge_mode=args.rnn_bidirectional_merge)(rnn_sequences)
             rnn_sequences = tf.keras.layers.Dropout(args.dropout)(rnn_sequences)
             if args.rnn_residual and rnn_sequences_previous is not None:
