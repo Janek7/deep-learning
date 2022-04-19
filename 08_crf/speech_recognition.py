@@ -36,10 +36,6 @@ parser.add_argument("--decay", default=None, type=str, help="Learning decay rate
 parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial learning rate.")
 parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
 
-# TODO: try merge modes, done
-# TODO: try label smoothing (between .01 and .1)
-# TODO: cosine at the end
-# TODO: dropout element in LSTM layer, done
 
 class Model(tf.keras.Model):
     def __init__(self, args: argparse.Namespace, train: tf.data.Dataset) -> None:
