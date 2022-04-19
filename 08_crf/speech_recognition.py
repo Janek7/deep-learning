@@ -37,6 +37,8 @@ parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial 
 parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
 
 
+# SOTA: conformer (replace rnns with transformers & self attention)
+
 class Model(tf.keras.Model):
     def __init__(self, args: argparse.Namespace, train: tf.data.Dataset) -> None:
         # Use where?
