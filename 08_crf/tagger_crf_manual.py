@@ -18,11 +18,11 @@ from morpho_dataset import MorphoDataset
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
 parser.add_argument("--batch_size", default=10, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=5, type=int, help="Number of epochs.")
-parser.add_argument("--max_sentences", default=None, type=int, help="Maximum number of sentences to load.")
+parser.add_argument("--epochs", default=2, type=int, help="Number of epochs.")
+parser.add_argument("--max_sentences", default=1000, type=int, help="Maximum number of sentences to load.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
 parser.add_argument("--rnn_cell", default="LSTM", type=str, help="RNN cell type.")
-parser.add_argument("--rnn_cell_dim", default=64, type=int, help="RNN cell dimension.")
+parser.add_argument("--rnn_cell_dim", default=24, type=int, help="RNN cell dimension.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 parser.add_argument("--we_dim", default=128, type=int, help="Word embedding dimension.")
@@ -31,6 +31,9 @@ parser.add_argument("--we_dim", default=128, type=int, help="Word embedding dime
 
 class Model(tf.keras.Model):
     def __init__(self, args: argparse.Namespace, train: MorphoDataset.Dataset) -> None:
+        self.args = args
+        self.train = train
+
         # Implement a one-layer RNN network. The input `words` is
         # a RaggedTensor of strings, each batch example being a list of words.
         words = tf.keras.layers.Input(shape=[None], dtype=tf.string, ragged=True)
@@ -71,7 +74,7 @@ class Model(tf.keras.Model):
                      loss=self.crf_loss,
                      metrics=[self.SpanLabelingF1Metric(train.tags.word_mapping.get_vocabulary(), name="f1")])
 
-        # TODO(tagger_crf): Create `self._crf_weights`, a trainable zero-initialized tf.float32 matrix variable
+        # (tagger_crf): Create `self._crf_weights`, a trainable zero-initialized tf.float32 matrix variable
         # of size [number of unique train tags, number of unique train.tags], using `self.add_weight`.
         self._crf_weights = self.add_weight("crf_weights", shape=[train.tags.word_mapping.vocabulary_size(),
                                                                   train.tags.word_mapping.vocabulary_size()],
@@ -83,7 +86,7 @@ class Model(tf.keras.Model):
         assert isinstance(gold_labels, tf.RaggedTensor), "Gold labels given to CRF loss must be RaggedTensors"
         assert isinstance(logits, tf.RaggedTensor), "Logits given to CRF loss must be RaggedTensors"
 
-        # TODO: Implement the CRF loss computation manually, without using the `tfa.text` methods.
+        # : Implement the CRF loss computation manually, without using the `tfa.text` methods.
         # You can count on the fact that all training sentences contain at least 2 words.
         #
         # The following remarks might come handy:
@@ -116,7 +119,58 @@ class Model(tf.keras.Model):
         # - To index a (possible ragged) tensor with another (possible ragged) tensor,
         #   `tf.gather` and `tf.gather_nd` can be used. If is useful fo pay attention
         #   to the `batch_dims` argument of these calls.
-        raise NotImplementedError()
+
+        # tf.math.reduce_logsumexp
+        # crf.crf_forward
+
+        logits_dense = logits.to_tensor()
+        crf_weights_tmp = tf.cast(self._crf_weights, dtype=logits_dense.dtype)
+        gold_labels_dense = tf.cast(gold_labels.to_tensor(), dtype=tf.int32)
+        gold_labels_lengths = tf.cast(gold_labels.row_lengths(), dtype=tf.int32)
+
+        maximal_sequence_length = tf.shape(logits_dense)[1]
+        vocab_size = tf.shape(logits_dense)[2]  # = train.tags.word_mapping.vocabulary_size() but not available in graph
+        batches = tf.shape(logits_dense)[0]
+        offsets = (tf.range(batches * maximal_sequence_length) * vocab_size) + tf.reshape(gold_labels_dense, [-1])
+        relevant_logits = tf.gather(tf.reshape(logits_dense, [-1]), offsets)
+        relevant_logits = tf.reshape(relevant_logits, [batches, maximal_sequence_length])
+
+        mask = tf.sequence_mask(gold_labels_lengths, maxlen=tf.shape(gold_labels_dense)[1], dtype=relevant_logits.dtype)
+        scores = tf.reduce_sum(relevant_logits * mask, axis=1)
+
+
+        transitions = tf.shape(gold_labels_dense)[1] - 1
+        tag_starts = tf.slice(gold_labels_dense, begin=[0,0], size=[-1,transitions])
+        tag_ends = tf.slice(gold_labels_dense, begin=[0,1], size=[-1,transitions])
+        # flatten to 1d
+        tag_indices_flat = tag_starts * vocab_size + tag_ends
+        crf_weights_flat = tf.reshape(crf_weights_tmp, [-1])
+        gathered_crf_weights = tf.gather(crf_weights_flat, tag_indices_flat)
+
+        mask = tf.sequence_mask(gold_labels_lengths, maxlen=tf.shape(gold_labels_dense)[1],
+                                dtype=gathered_crf_weights.dtype)
+        gathered_weights_reduced = tf.reduce_sum(gathered_crf_weights * tf.slice(mask, [0,1], [-1,-1]), 1)
+
+        # compute alphas
+        logits_dense_start = tf.squeeze(tf.slice(logits_dense, [0,0,0], [-1,1,-1]), [1])
+        logits_dense_rest = tf.transpose(tf.slice(logits_dense, [0,1,0], [-1,-1,-1]), [1,0,2])
+
+        def scan(prev, x):
+            prev = tf.expand_dims(prev, 2)
+            transition_scores = prev + tf.expand_dims(crf_weights_tmp, 0)
+            return x + tf.reduce_logsumexp(transition_scores, [1])
+        a = tf.transpose(tf.scan(scan, logits_dense_rest, logits_dense_start), [1,0,2])
+        a = tf.concat([tf.expand_dims(logits_dense_start, 1), a], 1)
+        indices = tf.stack([tf.range(tf.shape(gold_labels_lengths - 1)[0]), gold_labels_lengths - 1],
+                           axis=1)
+        a = tf.gather_nd(a, indices)
+
+        # reduce results
+        self._crf_weights = crf_weights_tmp
+        n = tf.reduce_logsumexp(a, [1])
+        n = tf.where(tf.less_equal(gold_labels_lengths, 0), tf.zeros_like(n), n)
+        loss = tf.reduce_mean(n - (scores + gathered_weights_reduced))
+        return loss
 
     def crf_decode(self, logits: tf.RaggedTensor) -> tf.RaggedTensor:
         assert isinstance(logits, tf.RaggedTensor), "Logits given to CTC decoding must be RaggedTensors"
