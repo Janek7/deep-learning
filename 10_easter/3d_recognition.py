@@ -25,7 +25,7 @@ parser.add_argument("--threads", default=1, type=int, help="Maximum number of th
 
 parser.add_argument("--model", default="resnet", type=str, help="Model type (resnet/widenet")
 parser.add_argument("--activation", default="relu", type=str, help="Activation type")
-parser.add_argument("--decay", default="cosine", type=str, help="Decay type")
+parser.add_argument("--decay", default=None, type=str, help="Decay type")
 parser.add_argument("--depth", default=56, type=int, help="Model depth")
 parser.add_argument("--dropout", default=0., type=float, help="Dropout")
 parser.add_argument("--label_smoothing", default=0., type=float, help="Label smoothing.")
@@ -154,10 +154,15 @@ def main(args: argparse.Namespace) -> None:
             [value, value / 10, value / 100])
     elif args.decay == "cosine":
         decay_fn = lambda value: tf.keras.experimental.CosineDecay(value, training_batches)
+    elif args.decay is None:
+        decay_fn = lambda value: value
     else:
         raise ValueError("Uknown decay '{}'".format(args.decay))
     if args.learning_rate is None:
-        args.learning_rate = 0.1 if args.optimizer == "SGD" else 0.01
+        if args.decay is not None:
+            args.learning_rate = 0.1 if args.optimizer == "SGD" else 0.01
+        else:
+            args.learning_rate = 0.001
     learning_rate = decay_fn(args.learning_rate)
     weight_decay = decay_fn(args.weight_decay)
 
@@ -192,7 +197,7 @@ def main(args: argparse.Namespace) -> None:
     print(args)
     best_checkpoint_path = os.path.join(args.logdir, "3d_recognition.ckpt")
     model.fit(
-        train.take(1), batch_size=args.batch_size, epochs=args.epochs, validation_data=dev.take(1),
+        train, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
         callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
                    tf.keras.callbacks.ModelCheckpoint(filepath=best_checkpoint_path,
                                                       save_weights_only=True, monitor='val_accuracy',
@@ -206,7 +211,7 @@ def main(args: argparse.Namespace) -> None:
     with open(os.path.join(args.logdir, "3d_recognition.txt"), "w", encoding="utf-8") as predictions_file:
         # : Predict the probabilities on the test set
         print("create test set predictions")
-        test_probabilities = model.predict(test.take(1))
+        test_probabilities = model.predict(test)
         for probs in test_probabilities:
             print(np.argmax(probs), file=predictions_file)
 

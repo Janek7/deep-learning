@@ -8,8 +8,6 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Report only TF errors by d
 
 import numpy as np
 import tensorflow as tf
-# TODO
-tf.config.run_functions_eagerly(True)
 import tensorflow_addons as tfa
 
 from morpho_dataset import MorphoDataset
@@ -79,7 +77,7 @@ class Model(tf.keras.Model):
             # : Describe the size of a single decoder output (batch size and the
             # sequence length are not included) by returning
             #   tf.TensorShape(number of logits of each output element [lemma character])
-            return tf.TensorShape([self.lemmatizer.target_mapping.vocabulary_size()])
+            return tf.TensorShape([self.lemmatizer.target_output_layer.units])
 
         @property
         def output_dtype(self):
@@ -290,7 +288,8 @@ def main(args: argparse.Namespace) -> Dict[str, float]:
                         for strings in [forms, lemmas, model.predict_on_batch(forms[:1, :1])]])
 
     logs = model.fit(train, epochs=args.epochs, validation_data=dev, verbose=2,
-                     callbacks=[ShowIntermediateResults(dev), model.tb_callback])
+                     callbacks=[#ShowIntermediateResults(dev),
+                                model.tb_callback])
 
     # Return all metrics for ReCodEx to validate
     return {metric: values[-1] for metric, values in logs.history.items()}
