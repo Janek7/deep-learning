@@ -14,12 +14,12 @@ from morpho_dataset import MorphoDataset
 
 parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
-parser.add_argument("--batch_size", default=10, type=int, help="Batch size.")
-parser.add_argument("--cle_dim", default=64, type=int, help="CLE embedding dimension.")
-parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
-parser.add_argument("--max_sentences", default=None, type=int, help="Maximum number of sentences to load.")
+parser.add_argument("--batch_size", default=2, type=int, help="Batch size.")
+parser.add_argument("--cle_dim", default=32, type=int, help="CLE embedding dimension.")
+parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
+parser.add_argument("--max_sentences", default=500, type=int, help="Maximum number of sentences to load.")
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
-parser.add_argument("--rnn_dim", default=64, type=int, help="RNN cell dimension.")
+parser.add_argument("--rnn_dim", default=32, type=int, help="RNN cell dimension.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # If you add more arguments, ReCodEx will keep them with your default values.
@@ -52,10 +52,13 @@ class Model(tf.keras.Model):
         self.target_rnn_cell = tf.keras.layers.GRUCell(args.rnn_dim)
         self.target_output_layer = tf.keras.layers.Dense(self.target_mapping.vocabulary_size())
 
-        # TODO: Define
+        # : Define
         # - `self.attention_source_layer` as a Dense layer with `args.rnn_dim` outputs
         # - `self.attention_state_layer` as a Dense layer with `args.rnn_dim` outputs
         # - `self.attention_weight_layer` as a Dense layer with 1 output
+        self.attention_source_layer = tf.keras.layers.Dense(args.rnn_dim)
+        self.attention_state_layer = tf.keras.layers.Dense(args.rnn_dim)
+        self.attention_weight_layer = tf.keras.layers.Dense(1)
 
         # Compile the model
         self.compile(
@@ -82,15 +85,16 @@ class Model(tf.keras.Model):
             # (lemmatizer_noattn): Describe the size of a single decoder output (batch size and the
             # sequence length are not included) by returning
             #   tf.TensorShape(number of logits of each output element [lemma character])
-            raise NotImplementedError()
+            return tf.TensorShape([self.lemmatizer.target_output_layer.units])
+
         @property
         def output_dtype(self):
             # (lemmatizer_noattn): Return the type of the decoder output (so the type of the
             # produced logits).
-            return tf.TensorShape([self.lemmatizer.target_mapping.vocabulary_size()])
+            return tf.float32
 
         def with_attention(self, inputs, states):
-            # TODO: Compute the attention.
+            # : Compute the attention.
             # - Compute projected source states by passing `self.source_states` through the
             #   `self.lemmatizer.attention_source_layer`. Because `self.source_states` do not change,
             #   you should in fact precompute the projected source states once in `initialize`.
@@ -105,10 +109,23 @@ class Model(tf.keras.Model):
             #   the corresponding input forms had.
             # - Finally concatenate `inputs` and `attention` (in this order) and return the result.
 
+            # projected source states are precomputed with the following call in `initialize`
+            # projected_source_states = self.lemmatizer.attention_source_layer(self.source_states)
+            projected_source_states = self.source_states
+            projected_decoder_state = self.lemmatizer.attention_state_layer(states)
+            sum = projected_source_states + tf.expand_dims(projected_decoder_state, axis=1)
+
+            temp = self.lemmatizer.attention_weight_layer(tf.tanh(sum))
+            weights = tf.nn.softmax(temp, axis=1)
+            attention = tf.math.reduce_sum(self.source_states_original * weights, axis=1)
+
             return tf.concat([inputs, attention], axis=1)
 
         def initialize(self, layer_inputs, initial_state=None, mask=None):
             self.source_states, self.targets = layer_inputs
+            self.source_states_original = layer_inputs[0]
+            # refers to comment in `with_attention` that attention transform of source states can be precomputed here
+            self.source_states = self.lemmatizer.attention_source_layer(self.source_states)
 
             # (lemmatizer_noattn): Define `finished` as a vector of self.batch_size of `False` [see tf.fill].
             finished = tf.fill([self.batch_size], False)
@@ -117,11 +134,13 @@ class Model(tf.keras.Model):
             # embedded using self.lemmatizer.target_embedding
             inputs = self.lemmatizer.target_embedding(tf.fill([self.batch_size], MorphoDataset.Factor.BOW))
 
-            # TODO: Define `states` as the representation of the first character
+            # : Define `states` as the representation of the first character
             # in `source_states`. The idea is that it is most relevant for generating
             # the first letter and contains all following characters via the backward RNN.
+            states = self.source_states_original[:, 0]
 
-            # TODO: Pass `inputs` through `self.with_attention(inputs, states)`.
+            # : Pass `inputs` through `self.with_attention(inputs, states)`.
+            inputs = self.with_attention(inputs, states)
 
             return finished, inputs, states
 
@@ -140,7 +159,8 @@ class Model(tf.keras.Model):
             # `time`-th char from `self.targets` is `MorphoDataset.Factor.EOW`, False otherwise.
             finished = tf.math.equal(self.targets[:, time], MorphoDataset.Factor.EOW)
 
-            # TODO: Pass `next_inputs` through `self.with_attention(next_inputs, states)`.
+            # : Pass `next_inputs` through `self.with_attention(next_inputs, states)`.
+            next_inputs = self.with_attention(next_inputs, states)
 
             return outputs, states, next_inputs, finished
 
@@ -181,7 +201,8 @@ class Model(tf.keras.Model):
             # prediction in `outputs` is `MorphoDataset.Factor.EOW`, False otherwise.
             finished = tf.math.equal(outputs, MorphoDataset.Factor.EOW)
 
-            # TODO(DecoderTraining): Pass `next_inputs` through `self.with_attention(next_inputs, states)`.
+            # (DecoderTraining): Pass `next_inputs` through `self.with_attention(next_inputs, states)`.
+            next_inputs = self.with_attention(next_inputs, states)
 
             return outputs, states, next_inputs, finished
 
@@ -204,13 +225,14 @@ class Model(tf.keras.Model):
             target_charseqs = target_charseqs.to_tensor()
 
         # (lemmatizer_noattn): Embed source_charseqs using `source_embedding`
-        source_charseqs_embeddings = self.source_embedding(source_charseqs)
+        source_embedded = self.source_embedding(source_charseqs)
 
-        # TODO: Run source_rnn on the embedded sequences, returning outputs in `source_states`.
+        # : Run source_rnn on the embedded sequences, returning outputs in `source_states`.
         # However, convert the embedded sequences from a RaggedTensor to a dense Tensor first,
         # i.e., call the `source_rnn` with
         #   (source_embedded.to_tensor(), mask=tf.sequence_mask(source_embedded.row_lengths()))
-        sources_states = None
+        sources_states = self.source_rnn(source_embedded.to_tensor(),
+                                         mask=tf.sequence_mask(source_embedded.row_lengths()))
 
         # Run the appropriate decoder. Note that the outputs of the decoders
         # are exactly the outputs of `tfa.seq2seq.dynamic_decode`.
