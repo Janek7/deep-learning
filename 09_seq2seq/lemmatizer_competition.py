@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
 import argparse
 import datetime
 import os
@@ -20,6 +23,7 @@ parser.add_argument("--batch_size", default=64, type=int, help="Batch size.")
 parser.add_argument("--epochs", default=50, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
+parser.add_argument("--weight_path", default=None, type=int, help="Path to restore weights")
 # architecture params
 parser.add_argument("--cle_dim", default=32, type=int, help="CLE embedding dimension.")
 parser.add_argument("--rnn_dim", default=32, type=int, help="RNN cell dimension.")
@@ -358,6 +362,12 @@ def main(args: argparse.Namespace) -> None:
     # : Create the model and train it
     model = Model(args, morpho.train, train_batches=len(train))
 
+    if args.weight_path:
+        print(f"load model from {args.weight_path}")
+        model.load_weights(args.weight_path)
+    else:
+        print("create new model")
+
     print(args)
     model.fit(
         train, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
@@ -366,9 +376,13 @@ def main(args: argparse.Namespace) -> None:
                    #                                    save_weights_only=True, monitor='val_accuracy',
                    #                                    mode='min', save_best_only=True),
                    tf.keras.callbacks.EarlyStopping(monitor='val_accuracy', min_delta=1e-4, patience=10, verbose=0,
-                                                    mode="min", baseline=None, restore_best_weights=True)]
+                                                    mode="max", baseline=None, restore_best_weights=True)]
     )
     print(args)
+
+    weights_path = os.path.join(args.logdir, "weights")
+    model.save_weights(weights_path)
+    print(f"saved weights as '{weights_path}'")
 
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
