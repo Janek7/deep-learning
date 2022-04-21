@@ -73,15 +73,18 @@ class SliceConv(tf.keras.layers.Layer):
         return tf.concat(l, axis=1)
 
 
-# Layer that encapsulates ResNet convolutions (without global average pooling and head)
-class ResNetLayer(tf.keras.layers.Layer):
-
+class ComplexConvLayer(tf.keras.layers.Layer):
+    # abstract constructor and config from `ResNetLayer` and `WideNetLayer`
     def __init__(self, args):
         super().__init__()
         self._n = (args.depth - 2) // 6
 
     def get_config(self):
         return {"n": self._n}
+
+
+# Layers that encapsulates ResNet convolutions (without global average pooling and head)
+class ResNetLayer(ComplexConvLayer):
 
     def _cnn(self, inputs, filters, kernel_size, stride, activation):
         hidden = tf.keras.layers.Conv2D(filters, kernel_size=kernel_size, strides=stride, padding="same", use_bias=False)(inputs)
@@ -105,6 +108,35 @@ class ResNetLayer(tf.keras.layers.Layer):
             for block in range(self._n):
                 hidden = self._block(hidden, 16 * (1 << stage), 2 if stage > 0 and block == 0 else 1)
         return hidden
+
+
+# Layers that encapsulates WideNet convolutions (without global average pooling and head)
+class WideNetLayer(ComplexConvLayer):
+
+    def _cnn(self, inputs, filters, kernel_size, stride):
+        return tf.keras.layers.Conv2D(filters, kernel_size=kernel_size, strides=stride, padding="same", use_bias=False)(inputs)
+
+    def _bn_activation(self, inputs):
+        return tf.keras.layers.ReLU()(tf.keras.layers.BatchNormalization()(inputs))
+
+    def _block(self, inputs, filters, stride):
+        hidden = self._bn_activation(inputs)
+        hidden = self._cnn(hidden, filters, 3, stride)
+        hidden = self._bn_activation(hidden)
+        hidden = tf.keras.layers.Dropout(args.dropout)(hidden)
+        hidden = self._cnn(hidden, filters, 3, 1)
+        if stride > 1:
+            residual = self._cnn(inputs, filters, 1, stride)
+        else:
+            residual = inputs
+        return hidden + residual
+
+    def call(self, inputs, training):
+        hidden = self._cnn(inputs, 16, 3, 1)
+        for stage in range(3):
+            for block in range(self._n):
+                hidden = self._block(hidden, 16 * args.width * (1 << stage), 2 if block == 0 else 1)
+        hidden = self._bn_activation(hidden)
 
 
 # Model
@@ -146,7 +178,7 @@ class Model(tf.keras.Model):
         elif args.cnn_model == 'resnet':
             conv = ResNetLayer(args)(inputs)
         elif args.cnn_model == 'widenet':
-            raise NotImplementedError("widenet is not implemented yet")  # TODO
+            conv = WideNetLayer(args)(inputs)
         else:
             raise ValueError(f"cnn model must be 'normal/resnet/widenet' and not {args.cnn_model}")
         print("conv representation", conv.shape)
@@ -199,6 +231,8 @@ class Model(tf.keras.Model):
             loss=self.ctc_loss,
             metrics=[HOMRDataset.EditDistanceMetric("edit_distance")]
         )
+
+    # the following five methods are the same as in speech recognition
 
     def ctc_loss(self, gold_labels: tf.RaggedTensor, logits: tf.RaggedTensor) -> tf.Tensor:
         assert isinstance(gold_labels, tf.RaggedTensor), "Gold labels given to CTC loss must be RaggedTensors"
