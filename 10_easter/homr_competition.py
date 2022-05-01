@@ -26,7 +26,10 @@ parser.add_argument("--weight_path", default=None, type=str, help="Path to resto
 parser.add_argument("--image_height", default=50, type=int, help="Height to resize images")
 parser.add_argument("--image_width", default=500, type=int, help="Width to resize images")
 parser.add_argument("--cnn_model", default="normal", type=str, help="Model type (normal/resnet/widenet")
+parser.add_argument("--cnn_filters", default=32, type=int, help="Normal CNN variant #filters")
+parser.add_argument("--cnn_layers", default=3, type=int, help="Normal CNN variant #layers")
 parser.add_argument("--depth", default=56, type=int, help="CNN model depth")
+parser.add_argument("--width", default=1, type=int, help="WideNet model width")
 parser.add_argument("--conv_slices", default=25, type=int, help="Slices of conv representations as input for RNN")
 parser.add_argument("--rnn_cell", default="LSTM", type=str, help="RNN cell type.")
 parser.add_argument("--rnn_cell_dim", default=64, type=int, help="RNN cell dimension.")
@@ -137,6 +140,7 @@ class WideNetLayer(ComplexConvLayer):
             for block in range(self._n):
                 hidden = self._block(hidden, 16 * args.width * (1 << stage), 2 if block == 0 else 1)
         hidden = self._bn_activation(hidden)
+        return hidden
 
 
 # Model
@@ -172,9 +176,9 @@ class Model(tf.keras.Model):
 
         # CNN (use of ResNet and WideNet only internal representation without global avg pooling  & class. header)
         if args.cnn_model == 'normal':
-            conv = self.bn_relu(tf.keras.layers.Conv2D(32, 3, 1, "same")(inputs))
-            conv = self.bn_relu(tf.keras.layers.Conv2D(32, 3, 1, "same")(conv))
-            conv = self.bn_relu(tf.keras.layers.Conv2D(32, 3, 1, "same")(conv))
+            conv = inputs
+            for i in range(args.cnn_layers):
+                conv = self.bn_relu(tf.keras.layers.Conv2D(args.cnn_filters, 3, 1, "same")(conv))
         elif args.cnn_model == 'resnet':
             conv = ResNetLayer(args)(inputs)
         elif args.cnn_model == 'widenet':
@@ -354,9 +358,9 @@ def main(args: argparse.Namespace) -> None:
 
     print(args)
     model.fit(
-        train, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
+        train.take(1), batch_size=args.batch_size, epochs=args.epochs, validation_data=dev.take(1),
         callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
-                   tf.keras.callbacks.EarlyStopping(monitor='val_edit_distance', min_delta=1e-4, patience=100,
+                   tf.keras.callbacks.EarlyStopping(monitor='val_edit_distance', min_delta=1e-4, patience=10,
                                                     verbose=0, mode="min", baseline=None, restore_best_weights=True)]
     )
     print(args)
