@@ -19,8 +19,8 @@ parser.add_argument("--max_sentences", default=800, type=int, help="Maximum numb
 parser.add_argument("--recodex", default=False, action="store_true", help="Evaluation in ReCodEx.")
 parser.add_argument("--transformer_dropout", default=0., type=float, help="Transformer dropout.")
 parser.add_argument("--transformer_expansion", default=4, type=float, help="Transformer FFN expansion factor.")
-parser.add_argument("--transformer_heads", default=4, type=int, help="Transformer heads.")
-parser.add_argument("--transformer_layers", default=0, type=int, help="Transformer layers.")
+parser.add_argument("--transformer_heads", default=4, type=int, help="Transformer heads.")  # default: 4
+parser.add_argument("--transformer_layers", default=2, type=int, help="Transformer layers.")  # default: 2
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 parser.add_argument("--we_dim", default=64, type=int, help="Word embedding dimension.")
@@ -53,7 +53,7 @@ class Model(tf.keras.Model):
             # each with shape `[dim, dim]`; for other arguments, keep the default values
             # (which mean trainable float32 matrices initialized with `"glorot_uniform"`).
             for weight_matrix in ["W_Q", "W_K", "W_V", "W_O"]:
-                setattr(self, weight_matrix, self.add_weight("crf_weights", shape=[dim, dim], trainable=True,
+                setattr(self, weight_matrix, self.add_weight(weight_matrix, shape=[dim, dim], trainable=True,
                                                              initializer='glorot_uniform', dtype=tf.float32))
 
         def get_config(self):
@@ -81,8 +81,12 @@ class Model(tf.keras.Model):
 
             # : Continue by computing the self-attention weights as Q @ K^T,
             # normalizing by the square root of `dim // heads`.
-            self_attention_weights = (Q @ tf.transpose(K)) / (tf.math.sqrt(self.dim // self.heads))
-            self_attention_weights = self_attention_weights[:, :, tf.newaxis, :]
+            tf.print(tf.shape(Q))
+            tf.print(tf.shape(tf.transpose(K, perm=[0, 1, 3, 2])))
+            self_attention_weights = Q @ tf.transpose(K, perm=[0, 1, 3, 2])
+            self_attention_weights /= tf.math.sqrt(tf.cast(self.dim // self.heads, tf.float32))
+            tf.print(tf.shape(self_attention_weights))
+            # self_attention_weights = self_attention_weights[:, :, tf.newaxis, :]
 
             # : Apply the softmax, but including a suitable mask, which ignores all padding words.
             # The original `mask` is a bool matrix of shape [batch_size, max_sentence_len]
@@ -91,7 +95,8 @@ class Model(tf.keras.Model):
             #   of padding words to -1e9.
             # - Alternatively, you can use the fact that tf.keras.layers.Softmax accepts a named
             #   boolean argument `mask` indicating the valid (True) or padding (False) elements.
-            softmaxed = tf.keras.layers.Softmax()(self_attention_weights, mask=mask)
+            mask_expanded = mask[:, tf.newaxis, tf.newaxis, :]
+            softmaxed = tf.keras.layers.Softmax()(self_attention_weights, mask=mask_expanded)
 
             # : Finally,
             # - take a weighted combination of values V according to the computed attention
@@ -102,6 +107,7 @@ class Model(tf.keras.Model):
             values_mul = softmaxed @ V
             values_mul_transposed = tf.transpose(values_mul, perm=[0, 2, 1, 3])
             values_mul_reshaped = tf.reshape(values_mul_transposed, [batch_size, max_sentence_len, self.dim])
+            tf.print("-"*100)
             return values_mul_reshaped @ self.W_O
 
     class Transformer(tf.keras.layers.Layer):
@@ -113,14 +119,20 @@ class Model(tf.keras.Model):
             # - a layer normalization and a FFN layer followed by a dropout layer.
             # Note: create attention and ffn layer here central, because weights have to be stored central in the layer
             # and not be created during every call. LayerNorm and Dropout do not have trainable parameters.
-            self.transformer_layers = [(Model.SelfAttention(dim, heads), Model.FNN(dim, expansion))
-                                       for i in range(layers)]
+            self.transformer_layers = [(
+                tf.keras.layers.LayerNormalization(),
+                Model.SelfAttention(dim, heads),
+                tf.keras.layers.Dropout(self.dropout),
+                tf.keras.layers.LayerNormalization(),
+                Model.FFN(dim, expansion),
+                tf.keras.layers.Dropout(self.dropout)
+            ) for i in range(layers)]
 
         def get_config(self):
             return {name: getattr(self, name) for name in ["layers", "dim", "expansion", "heads", "dropout"]}
 
         def call(self, inputs, mask):
-            # TODO: Start by computing the sinusoidal positional embeddings.
+            # : Start by computing the sinusoidal positional embeddings.
             # They have a shape `[max_sentence_len, dim]` and
             # - for `i < dim / 2`, the value on index `[pos, i]` should be
             #     `sin(pos / 10000 ** (2 * i / dim))`
@@ -149,7 +161,7 @@ class Model(tf.keras.Model):
 
                 # compute positional embeddings
                 part_1 = tf.math.sin(pos / (10000 ** (2 * i_smaller / self.dim)))
-                part_2 = tf.math.cos(pos / (10000 ** (2 * i_greater / self.dim)))
+                part_2 = tf.math.cos(pos / (10000 ** (2 * (i_greater - self.dim/2) / self.dim)))
                 positional_embeddings = tf.concat([part_1, part_2], axis=1)
 
                 # expand to batch size (repeat batch_size times on axis 0 and 1 on axis 1)
@@ -171,26 +183,12 @@ class Model(tf.keras.Model):
             # passed to the self-attention operation to ignore the padding words.
             inputs += positional_embeddings
 
-            # method for calling one transformer (encoding) layer
-            def call_transformer_layer(inputs, self_attention_layer, ffn_layer):
-                # attention sublayer
-                layer_norm1 = tf.keras.layers.LayerNormalization()(inputs)
-                self_attention = self_attention_layer(layer_norm1, mask=mask)
-                dropout1 = tf.keras.layers.Dropout(self.dropout)(self_attention)
-                intermediate = inputs + dropout1
-
-                # FFN sublayer
-                layer_norm2 = tf.keras.layers.LayerNormalization()(intermediate)
-                ffn = ffn_layer(layer_norm2)
-                dropout2 = tf.keras.layers.Dropout(self.dropout)(ffn)
-                result = intermediate + dropout2
-
-                return result
-
             layer_input = inputs
             for i in range(self.layers):
-                self_attention_layer, ffn_layer = self.transformer_layers[i]
-                layer_input = call_transformer_layer(layer_input, self_attention_layer, ffn_layer)
+                layer_norm1, self_attention_layer, dropout1, layer_norm2, ffn_layer, dropout2 = self.transformer_layers[i]
+                intermediate = inputs + dropout1(self_attention_layer(layer_norm1(inputs), mask=mask))
+                result_i = intermediate + dropout2(ffn_layer(layer_norm2(intermediate)))
+                layer_input = result_i
 
             return layer_input
 
