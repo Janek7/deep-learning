@@ -25,28 +25,77 @@ parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # Architecture params
+parser.add_argument("--dropout", default=0., type=float, help="Dropout")
+parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
+parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial learning rate.")
+parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
+parser.add_argument("--warmup_steps", default=0.01, type=int, help="Share of warmup over total training period.")
+
+
+class LinearWarmup(tf.optimizers.schedules.LearningRateSchedule):
+    def __init__(self, warmup_steps, following_schedule):
+        self._warmup_steps = warmup_steps
+        self._warmup = tf.optimizers.schedules.PolynomialDecay(0., warmup_steps, following_schedule(0))
+        self._following = following_schedule
+
+    def __call__(self, step):
+        return tf.cond(step < self._warmup_steps,
+                       lambda: self._warmup(step),
+                       lambda: self._following(step - self._warmup_steps))
 
 
 class Model(tf.keras.Model):
-    def __init__(self, args, eleczech):
+    def __init__(self, args, eleczech, train):
 
-        input = {
+        # A) REGULARIZATION
+        decay_steps = len(train) * args.epochs
+        if not args.decay or args.decay in ["None", "none"]:
+            # constant rate wrapped in callable schedule for warmup steps later
+            learning_rate = tf.keras.optimizers.schedules.PolynomialDecay(decay_steps=decay_steps,
+                                                                          initial_learning_rate=args.learning_rate,
+                                                                          end_learning_rate=args.learning_rate,
+                                                                          power=1.0)
+        else:
+            if args.decay == 'linear':
+                learning_rate = tf.keras.optimizers.schedules.PolynomialDecay(decay_steps=decay_steps,
+                                                                              initial_learning_rate=args.learning_rate,
+                                                                              end_learning_rate=args.learning_rate_final,
+                                                                              power=1.0)
+            elif args.decay == 'exponential':
+                decay_rate = args.learning_rate_final / args.learning_rate
+                learning_rate = tf.optimizers.schedules.ExponentialDecay(decay_steps=decay_steps,
+                                                                         decay_rate=decay_rate,
+                                                                         initial_learning_rate=args.learning_rate)
+            elif args.decay == 'cosine':
+                learning_rate = tf.keras.optimizers.schedules.CosineDecay(decay_steps=decay_steps,
+                                                                          initial_learning_rate=args.learning_rate)
+            else:
+                raise NotImplementedError("Use only 'linear', 'exponential' or 'cosine' as LR scheduler")
+
+        if args.warmup_steps:
+            # set warmup steps to args.warmup_steps (e.g. 0.01) of training lengths
+            warmup_steps = len(train) * args.epochs * args.warmup_steps
+            learning_rate = LinearWarmup(warmup_steps, following_schedule=learning_rate)
+
+        # B) ARCHITECTURE
+        inputs = {
             "input_ids": tf.keras.layers.Input(shape=[None], dtype=tf.int32),
             "attention_mask": tf.keras.layers.Input(shape=[None], dtype=tf.int32)
         }
 
-        eleczech_output = eleczech(input).last_hidden_state
-        eleczech_flattened = tf.keras.layers.Flatten()(eleczech_output)
+        eleczech_output = eleczech(inputs).last_hidden_state
+        # eleczech_output = tf.keras.layers.Flatten()(eleczech_output)
+        eleczech_dropout = tf.keras.layers.Dropout(args.dropout)(eleczech_output)
 
-        hidden = tf.keras.layers.Dense(64, activation=tf.nn.relu)(eleczech_flattened)
-
+        hidden = tf.keras.layers.Dense(32, activation=tf.nn.relu)(eleczech_dropout)
+        # hidden = tf.keras.layers.Flatten()(hidden)
 
         predictions = tf.keras.layers.Dense(3, activation=tf.nn.softmax)(hidden)
-        print(predictions)
 
-        super().__init__(inputs=input, outputs=predictions)
+        super().__init__(inputs=inputs, outputs=predictions)
 
-        self.compile(optimizer=tf.optimizers.Adam(),
+        # C) COMPILE
+        self.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate),
                      loss=tf.keras.losses.SparseCategoricalCrossentropy(),
                      metrics=[tf.metrics.SparseCategoricalAccuracy(name="accuracy")])
         self.summary()
@@ -73,7 +122,9 @@ def main(args: argparse.Namespace) -> None:
     # constructor of the TextClassificationDataset.
     facebook = TextClassificationDataset("czech_facebook")
 
-    def create_dataset(data: Dict[str, Any], training: bool) -> tf.data.Dataset:
+    def create_dataset(name) -> tf.data.Dataset:
+        dataset = getattr(facebook, name)
+        data = dataset.data
         # text tokenization
         X = [tokenizer.encode(sentence) for sentence in data['documents']]
         max_length = max(len(sentence) for sentence in X)
@@ -82,33 +133,31 @@ def main(args: argparse.Namespace) -> None:
         for i in range(len(X)):
             X_ids[i, :len(X[i])] = X[i]
             X_masks[i, :len(X[i])] = 1
+        print(X_ids.shape)
 
         # labels
-        y = np.array([label for label in data['labels']])
-        def one_hot(array):
-            unique, inverse = np.unique(array, return_inverse=True)
-            onehot = np.eye(unique.shape[0])[inverse]
-            return onehot
-        y = one_hot(y)
+        if name != "test":  # only for train and dev
+            y = dataset.label_mapping([label for label in data['labels']])
+        else:
+            y = None
 
         # create tf dataset
         dataset = tf.data.Dataset.from_tensor_slices(({'input_ids': X_ids, 'attention_mask': X_masks}, y))
-        if training:
+        if name == "train":
             dataset = dataset.shuffle(buffer_size=10000, seed=args.seed)
         dataset = dataset.batch(args.batch_size)
         return dataset
 
-    train = create_dataset(facebook.train.data, True)
-    dev = create_dataset(facebook.dev.data, False)
-    test = create_dataset(facebook.test.data, False)
-    for b in train.take(1):
-        print(b)
-        break
+    train = create_dataset("train")
+    dev = create_dataset("dev")
+    test = create_dataset("test")
+    # for b in train.take(1):
+    #     print(b)
+    #     break
 
-    # exit()
 
-    # TODO: Create the model and train it
-    model = Model(args, eleczech)
+    # : Create the model and train it
+    model = Model(args, eleczech, train)
 
     model.fit(
         train, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
