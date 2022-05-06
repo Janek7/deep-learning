@@ -81,12 +81,8 @@ class Model(tf.keras.Model):
 
             # : Continue by computing the self-attention weights as Q @ K^T,
             # normalizing by the square root of `dim // heads`.
-            tf.print(tf.shape(Q))
-            tf.print(tf.shape(tf.transpose(K, perm=[0, 1, 3, 2])))
             self_attention_weights = Q @ tf.transpose(K, perm=[0, 1, 3, 2])
             self_attention_weights /= tf.math.sqrt(tf.cast(self.dim // self.heads, tf.float32))
-            tf.print(tf.shape(self_attention_weights))
-            # self_attention_weights = self_attention_weights[:, :, tf.newaxis, :]
 
             # : Apply the softmax, but including a suitable mask, which ignores all padding words.
             # The original `mask` is a bool matrix of shape [batch_size, max_sentence_len]
@@ -107,7 +103,6 @@ class Model(tf.keras.Model):
             values_mul = softmaxed @ V
             values_mul_transposed = tf.transpose(values_mul, perm=[0, 2, 1, 3])
             values_mul_reshaped = tf.reshape(values_mul_transposed, [batch_size, max_sentence_len, self.dim])
-            tf.print("-"*100)
             return values_mul_reshaped @ self.W_O
 
     class Transformer(tf.keras.layers.Layer):
@@ -186,7 +181,7 @@ class Model(tf.keras.Model):
             layer_input = inputs
             for i in range(self.layers):
                 layer_norm1, self_attention_layer, dropout1, layer_norm2, ffn_layer, dropout2 = self.transformer_layers[i]
-                intermediate = inputs + dropout1(self_attention_layer(layer_norm1(inputs), mask=mask))
+                intermediate = layer_input + dropout1(self_attention_layer(layer_norm1(layer_input), mask=mask))
                 result_i = intermediate + dropout2(ffn_layer(layer_norm2(intermediate)))
                 layer_input = result_i
 
