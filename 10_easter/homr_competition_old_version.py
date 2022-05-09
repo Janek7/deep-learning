@@ -2,14 +2,13 @@
 # TEAM MEMBERS:
 # Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
 # Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
-
 import argparse
 import datetime
 import functools
 import os
 import re
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Report only TF errors by default
-os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
 import numpy as np
 import tensorflow as tf
 
@@ -18,31 +17,32 @@ from homr_dataset import HOMRDataset
 # : Define reasonable defaults and optionally more parameters.
 # Also, you can set the number of the threads 0 to use all your CPU cores.
 parser = argparse.ArgumentParser()
-parser.add_argument("--batch_size", default=16, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
+parser.add_argument("--batch_size", default=64, type=int, help="Batch size.")
+parser.add_argument("--epochs", default=50, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
-parser.add_argument("--threads", default=3, type=int, help="Maximum number of threads to use.")
+parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 parser.add_argument("--weight_path", default=None, type=str, help="Path to restore weights")
 # architecture params
-parser.add_argument("--image_height", default=64, type=int, help="Height to resize images")
-parser.add_argument("--image_width", default=512, type=int, help="Width to resize images")
+parser.add_argument("--image_height", default=50, type=int, help="Height to resize images")
+parser.add_argument("--image_width", default=500, type=int, help="Width to resize images")
 parser.add_argument("--cnn_model", default="normal", type=str, help="Model type (normal/resnet/widenet")
-parser.add_argument("--depth", default=56, type=int, help="CNN model depth in ResNet and WideNet")
-parser.add_argument("--width", default=32, type=int, help="Width of the input in WideNet")
-parser.add_argument("--conv_slices", default=64, type=int, help="Slices of conv representations as input for RNN")
+parser.add_argument("--cnn_filters", default=32, type=int, help="Normal CNN variant #filters")
+parser.add_argument("--cnn_layers", default=3, type=int, help="Normal CNN variant #layers")
+parser.add_argument("--depth", default=56, type=int, help="CNN model depth")
+parser.add_argument("--width", default=1, type=int, help="WideNet model width")
+parser.add_argument("--conv_slices", default=25, type=int, help="Slices of conv representations as input for RNN")
 parser.add_argument("--rnn_cell", default="LSTM", type=str, help="RNN cell type.")
-parser.add_argument("--rnn_cell_dim", default=256, type=int, help="RNN cell dimension.")
-parser.add_argument("--rnn_layers", default=2, type=int, help="Number of bidirectional rnn layers behind each other.")
+parser.add_argument("--rnn_cell_dim", default=64, type=int, help="RNN cell dimension.")
+parser.add_argument("--rnn_layers", default=1, type=int, help="Number of bidirectional rnn layers behind each other.")
 parser.add_argument("--dense_layers", default=None, type=str, help="List of dense layers (specified by units, ',' separated)")
 # regularization params
-parser.add_argument("--dropout", default=0.1, type=float, help="Dropout rate.")
+parser.add_argument("--dropout", default=0, type=float, help="Dropout rate.")
 parser.add_argument("--label_smoothing", default=0.0, type=float, help="Label smoothing.")
-parser.add_argument("--decay", default="cosine", type=str, help="Learning decay rate type")
+parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
 parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial learning rate.")
 parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
-parser.add_argument("--l2", default=0.001, type=float, help="L2 regularization.")
+parser.add_argument("--l2", default=0.00, type=float, help="L2 regularization.")
 
-#the values used for achieving the solution are given above
 
 # A layer retrieving fast text vectors for word.
 class SliceConv(tf.keras.layers.Layer):
@@ -140,6 +140,7 @@ class WideNetLayer(ComplexConvLayer):
             for block in range(self._n):
                 hidden = self._block(hidden, 16 * args.width * (1 << stage), 2 if block == 0 else 1)
         hidden = self._bn_activation(hidden)
+        return hidden
 
 
 # Model
@@ -175,27 +176,19 @@ class Model(tf.keras.Model):
 
         # CNN (use of ResNet and WideNet only internal representation without global avg pooling  & class. header)
         if args.cnn_model == 'normal':
-            # 112 x 1024 #
-            conv1 = tf.keras.layers.Conv2D(64, 3, 2, "same", use_bias = True)(inputs)
-
-            # 56 x 512 #
-            conv2 = tf.keras.layers.Conv2D(128, 3, 2, "same", use_bias = True)(conv1)
-            conv2 = self.bn_relu(conv2)
-            # 28 x 256 #
-            conv3 = tf.keras.layers.Conv2D(256, 3, 2, "same", use_bias = True)(conv2)
-            conv = self.bn_relu(conv3)
-            # 14 x 128 #
-
+            conv = inputs
+            for i in range(args.cnn_layers):
+                conv = self.bn_relu(tf.keras.layers.Conv2D(args.cnn_filters, 3, 1, "same")(conv))
         elif args.cnn_model == 'resnet':
             conv = ResNetLayer(args)(inputs)
         elif args.cnn_model == 'widenet':
             conv = WideNetLayer(args)(inputs)
         else:
             raise ValueError(f"cnn model must be 'normal/resnet/widenet' and not {args.cnn_model}")
-        
+        print("conv representation", conv.shape)
         # slice and flatten conv as input for rnn
         flattened_slices = SliceConv(number_slices=args.conv_slices)(conv)
-        
+        print("flattened", flattened_slices.shape)
 
         # RNN
         if args.rnn_cell == 'LSTM':
@@ -365,9 +358,9 @@ def main(args: argparse.Namespace) -> None:
 
     print(args)
     model.fit(
-        train, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
+        train.take(1), batch_size=args.batch_size, epochs=args.epochs, validation_data=dev.take(1),
         callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
-                   tf.keras.callbacks.EarlyStopping(monitor='val_edit_distance', min_delta=1e-4, patience=50,
+                   tf.keras.callbacks.EarlyStopping(monitor='val_edit_distance', min_delta=1e-4, patience=10,
                                                     verbose=0, mode="min", baseline=None, restore_best_weights=True)]
     )
     print(args)
@@ -388,4 +381,3 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     args = parser.parse_args([] if "__file__" not in globals() else None)
     main(args)
-
