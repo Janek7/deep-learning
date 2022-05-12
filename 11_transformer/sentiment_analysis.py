@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
+
 import argparse
 import datetime
 import os
@@ -16,21 +20,21 @@ except Exception:
 
 from text_classification_dataset import TextClassificationDataset
 
-# TODO: Define reasonable defaults and optionally more parameters.
+# : Define reasonable defaults and optionally more parameters.
 # Also, you can set the number of the threads 0 to use all your CPU cores.
 parser = argparse.ArgumentParser()
 # Standard params
 parser.add_argument("--batch_size", default=50, type=int, help="Batch size.")
-parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
+parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # Architecture params
 parser.add_argument("--dropout", default=0., type=float, help="Dropout")
-parser.add_argument("--decay", default=None, type=str, help="Learning decay rate type")
+parser.add_argument("--decay", default="None", type=str, help="Learning decay rate type")
 parser.add_argument("--learning_rate", default=0.001, type=float, help="Initial learning rate.")
 parser.add_argument("--learning_rate_final", default=0.0001, type=float, help="Final learning rate.")
-parser.add_argument("--warmup_steps", default=0.01, type=int, help="Share of warmup over total training period.")
 
+# use 0.1 dropout and learning rate 5e-5
 
 class LinearWarmup(tf.optimizers.schedules.LearningRateSchedule):
     def __init__(self, warmup_steps, following_schedule):
@@ -72,10 +76,9 @@ class Model(tf.keras.Model):
             else:
                 raise NotImplementedError("Use only 'linear', 'exponential' or 'cosine' as LR scheduler")
 
-        if args.warmup_steps:
-            # set warmup steps to args.warmup_steps (e.g. 0.01) of training lengths
-            warmup_steps = len(train) * args.epochs * args.warmup_steps
-            learning_rate = LinearWarmup(warmup_steps, following_schedule=learning_rate)
+        # create warmup of one epoch
+        warmup_steps = len(train)  # len(train) -> number of steps in one epoch
+        learning_rate = LinearWarmup(warmup_steps, following_schedule=learning_rate)
 
         # B) ARCHITECTURE
         inputs = {
@@ -84,13 +87,10 @@ class Model(tf.keras.Model):
         }
 
         eleczech_output = eleczech(inputs).last_hidden_state
-        # eleczech_output = tf.keras.layers.Flatten()(eleczech_output)
-        eleczech_dropout = tf.keras.layers.Dropout(args.dropout)(eleczech_output)
+        eleczech_cls_token = eleczech_output[:, 0]
+        eleczech_dropout = tf.keras.layers.Dropout(args.dropout)(eleczech_cls_token)
 
-        hidden = tf.keras.layers.Dense(32, activation=tf.nn.relu)(eleczech_dropout)
-        # hidden = tf.keras.layers.Flatten()(hidden)
-
-        predictions = tf.keras.layers.Dense(3, activation=tf.nn.softmax)(hidden)
+        predictions = tf.keras.layers.Dense(3, activation=tf.nn.softmax)(eleczech_dropout)
 
         super().__init__(inputs=inputs, outputs=predictions)
 
@@ -98,7 +98,7 @@ class Model(tf.keras.Model):
         self.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate),
                      loss=tf.keras.losses.SparseCategoricalCrossentropy(),
                      metrics=[tf.metrics.SparseCategoricalAccuracy(name="accuracy")])
-        self.summary()
+        # self.summary()
 
 
 def main(args: argparse.Namespace) -> None:
@@ -133,7 +133,6 @@ def main(args: argparse.Namespace) -> None:
         for i in range(len(X)):
             X_ids[i, :len(X[i])] = X[i]
             X_masks[i, :len(X[i])] = 1
-        print(X_ids.shape)
 
         # labels
         if name != "test":  # only for train and dev
@@ -151,26 +150,23 @@ def main(args: argparse.Namespace) -> None:
     train = create_dataset("train")
     dev = create_dataset("dev")
     test = create_dataset("test")
-    # for b in train.take(1):
-    #     print(b)
-    #     break
-
 
     # : Create the model and train it
     model = Model(args, eleczech, train)
-
+    print(args)
     model.fit(
         train, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
         callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
                    tf.keras.callbacks.EarlyStopping(monitor='val_accuracy', min_delta=1e-4, patience=100,
                                                     verbose=0, mode="max", baseline=None, restore_best_weights=True)]
     )
-    exit()
+    print(args)
 
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
     with open(os.path.join(args.logdir, "sentiment_analysis.txt"), "w", encoding="utf-8") as predictions_file:
         # : Predict the tags on the test set.
+        print("create test set predictions")
         predictions = model.predict(test)
 
         label_strings = facebook.test.label_mapping.get_vocabulary()
