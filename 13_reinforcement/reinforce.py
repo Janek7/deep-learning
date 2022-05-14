@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
+
 import argparse
 import os
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Report only TF errors by default
@@ -16,19 +20,29 @@ parser.add_argument("--render_each", default=0, type=int, help="Render some epis
 parser.add_argument("--seed", default=None, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # For these and any other arguments you add, ReCodEx will keep your default value.
-parser.add_argument("--batch_size", default=None, type=int, help="Batch size.")
-parser.add_argument("--episodes", default=None, type=int, help="Training episodes.")
-parser.add_argument("--hidden_layer_size", default=None, type=int, help="Size of hidden layer.")
-parser.add_argument("--learning_rate", default=None, type=float, help="Learning rate.")
+parser.add_argument("--batch_size", default=64, type=int, help="Batch size.")
+parser.add_argument("--episodes", default=1000, type=int, help="Training episodes.")
+parser.add_argument("--hidden_layer_size", default=32, type=int, help="Size of hidden layer.")
+parser.add_argument("--learning_rate", default=0.001, type=float, help="Learning rate.")
 
 
 class Agent:
     def __init__(self, env: wrappers.EvaluationEnv, args: argparse.Namespace) -> None:
-        # TODO: Create a suitable model. The predict method assumes
+        # : Create a suitable model. The predict method assumes
         # it is stored as `self._model`.
         #
         # Using Adam optimizer with given `args.learning_rate` is a good default.
-        raise NotImplementedError()
+        model = tf.keras.Sequential()
+        # shape of state: [position of cart, velocity of cart, angle of pole, rotation rate of pole]
+        model.add(tf.keras.layers.Input([4]))
+        model.add(tf.keras.layers.Dense(args.hidden_layer_size, activation=tf.nn.relu))
+        model.add(tf.keras.layers.Dense(2, activation=tf.nn.softmax))
+
+        # no loss or optimizer, training is done manually in self.train
+        model.compile()
+
+        model.summary()
+        self._model = model
 
     # Define a training method.
     #
@@ -40,11 +54,21 @@ class Agent:
     @wrappers.typed_np_function(np.float32, np.int32, np.float32)
     @tf.function(experimental_relax_shapes=True)
     def train(self, states: np.ndarray, actions: np.ndarray, returns: np.ndarray) -> None:
-        # TODO: Perform training, using the loss from the REINFORCE algorithm.
+        # : Perform training, using the loss from the REINFORCE algorithm.
         # The easiest approach is to use the `sample_weight` argument of
         # tf.losses.Loss.__call__, but you can also construct the Loss object
         # with tf.losses.Reduction.NONE and perform the weighting manually.
-        raise NotImplementedError()
+
+        with tf.GradientTape() as tape:
+            predictions = self._model(states)
+            # compute loss with actions as "gold data" and predictions of actions with states as x
+            loss = tf.losses.SparseCategoricalCrossentropy()(y_true=actions, y_pred=predictions, sample_weight=returns)
+
+        variables = self._model.variables
+        gradients = tape.gradient(loss, variables)
+
+        for variable, gradient in zip(variables, gradients):
+            variable.assign_sub(args.learning_rate * gradient)
 
     # Predict method, again with manual @tf.function for efficiency.
     @wrappers.typed_np_function(np.float32)
@@ -60,6 +84,8 @@ def main(env: wrappers.EvaluationEnv, args: argparse.Namespace) -> None:
     tf.config.threading.set_inter_op_parallelism_threads(args.threads)
     tf.config.threading.set_intra_op_parallelism_threads(args.threads)
 
+    print(args)
+
     # Construct the agent
     agent = Agent(env, args)
 
@@ -74,10 +100,12 @@ def main(env: wrappers.EvaluationEnv, args: argparse.Namespace) -> None:
                 if args.render_each and env.episode > 0 and env.episode % args.render_each == 0:
                     env.render()
 
-                # TODO: Choose `action` according to probabilities
+                # : Choose `action` according to probabilities
                 # distribution (see `np.random.choice`), which you
                 # can compute using `agent.predict` and current `state`.
-                action = None
+                state_expanded = np.expand_dims(state, axis=0)  # Introduction of batch dim necessary to pass it to input layer of self._model
+                predictions = agent.predict(state_expanded)[0]  # index 0 because of added batch dim
+                action = np.random.choice(2, p=predictions)
 
                 next_state, reward, done, _ = env.step(action)
 
@@ -87,18 +115,27 @@ def main(env: wrappers.EvaluationEnv, args: argparse.Namespace) -> None:
 
                 state = next_state
 
-            # TODO: Compute returns from the received rewards
+            # : Compute returns from the received rewards
+            returns = [sum(rewards[:i]) for i in range(len(rewards))]
 
-            # TODO: Add states, actions and returns to the training batch
+            # : Add states, actions and returns to the training batch
+            # important: extend to add all content and not append which appends the whole list as one element
+            batch_states.extend(states)
+            batch_actions.extend(actions)
+            batch_returns.extend(returns)
 
-        # TODO: Train using the generated batch.
+        # : Train using the generated batch.
+        agent.train(batch_states, batch_actions, batch_returns)
+    print(args)
 
     # Final evaluation
     while True:
         state, done = env.reset(start_evaluation=True), False
         while not done:
-            # TODO: Choose greedy action
-            action = None
+            # : Choose greedy action
+            state_expanded = np.expand_dims(state, axis=0)  # Introduction of batch dim necessary to pass it to input layer of self._model
+            predictions = agent.predict(state_expanded)[0]  # index 0 because of added batch dim
+            action = np.argmax(predictions)
             state, reward, done, _ = env.step(action)
 
 
