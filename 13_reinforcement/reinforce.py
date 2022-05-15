@@ -17,12 +17,12 @@ parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
 parser.add_argument("--recodex", default=False, action="store_true", help="Running in ReCodEx")
 parser.add_argument("--render_each", default=0, type=int, help="Render some episodes.")
-parser.add_argument("--seed", default=None, type=int, help="Random seed.")
+parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # For these and any other arguments you add, ReCodEx will keep your default value.
 parser.add_argument("--batch_size", default=64, type=int, help="Batch size.")
 parser.add_argument("--episodes", default=1000, type=int, help="Training episodes.")
-parser.add_argument("--hidden_layer_size", default=32, type=int, help="Size of hidden layer.")
+parser.add_argument("--hidden_layer_size", default=128, type=int, help="Size of hidden layer.")
 parser.add_argument("--learning_rate", default=0.001, type=float, help="Learning rate.")
 
 
@@ -37,12 +37,9 @@ class Agent:
         model.add(tf.keras.layers.Input([4]))
         model.add(tf.keras.layers.Dense(args.hidden_layer_size, activation=tf.nn.relu))
         model.add(tf.keras.layers.Dense(2, activation=tf.nn.softmax))
-
-        # no loss or optimizer, training is done manually in self.train
         model.compile()
-
-        model.summary()
         self._model = model
+        self._adam = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
 
     # Define a training method.
     #
@@ -64,11 +61,13 @@ class Agent:
             # compute loss with actions as "gold data" and predictions of actions with states as x
             loss = tf.losses.SparseCategoricalCrossentropy()(y_true=actions, y_pred=predictions, sample_weight=returns)
 
-        variables = self._model.variables
-        gradients = tape.gradient(loss, variables)
+        self._adam.minimize(loss=loss, var_list=self._model.variables, tape=tape)
 
-        for variable, gradient in zip(variables, gradients):
-            variable.assign_sub(args.learning_rate * gradient)
+        # (old variant without adam)
+        # variables = self._model.variables
+        # gradients = tape.gradient(loss, variables)
+        # for variable, gradient in zip(variables, gradients):
+            # variable.assign_sub(args.learning_rate * gradient)
 
     # Predict method, again with manual @tf.function for efficiency.
     @wrappers.typed_np_function(np.float32)
