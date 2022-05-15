@@ -13,13 +13,13 @@ parser = argparse.ArgumentParser()
 # These arguments will be set appropriately by ReCodEx, even if you change them.
 parser.add_argument("--recodex", default=False, action="store_true", help="Running in ReCodEx")
 parser.add_argument("--render_each", default=0, type=int, help="Render some episodes.")
-parser.add_argument("--seed", default=None, type=int, help="Random seed.")
+parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # For these and any other arguments you add, ReCodEx will keep your default value.
-parser.add_argument("--batch_size", default=None, type=int, help="Batch size.")
-parser.add_argument("--episodes", default=None, type=int, help="Training episodes.")
-parser.add_argument("--hidden_layer_size", default=None, type=int, help="Size of hidden layer.")
-parser.add_argument("--learning_rate", default=None, type=float, help="Learning rate.")
+parser.add_argument("--batch_size", default=64, type=int, help="Batch size.")
+parser.add_argument("--episodes", default=1000, type=int, help="Training episodes.")
+parser.add_argument("--hidden_layers", default="128", type=str, help="Size of hidden layers.")
+parser.add_argument("--learning_rate", default=0.001, type=float, help="Learning rate.")
 
 
 class Agent:
@@ -34,7 +34,25 @@ class Agent:
         #
         # Using Adam optimizer with given `args.learning_rate` for both models
         # is a good default.
-        raise NotImplementedError()
+
+        # shared architecture
+        inputs = tf.keras.layers.Input([4])
+        hidden = inputs
+        for layer_size in args.hidden_layers.split(","):
+            layer_size = int(layer_size)
+            hidden = tf.keras.layers.Dense(layer_size, activation=tf.nn.relu)(hidden)
+        # create models with specific heads
+        output_actions = tf.keras.layers.Dense(2, activation=tf.nn.softmax)(hidden)
+        self._policy_model = tf.keras.Model(inputs=inputs, outputs=output_actions)
+        self._policy_model.compile()
+        self._policy_model.summary()
+        output_baseline = tf.keras.layers.Dense(1, activation=None)(hidden)
+        output_baseline_reshaped = tf.reshape(output_baseline, [-1])
+        self._baseline_model = tf.keras.Model(inputs=inputs, outputs=output_baseline_reshaped)
+        self._baseline_model.compile()
+        self._baseline_model.summary()
+
+        self._adam = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
 
     # Define a training method.
     #
@@ -46,20 +64,33 @@ class Agent:
     @wrappers.typed_np_function(np.float32, np.int32, np.float32)
     @tf.function(experimental_relax_shapes=True)
     def train(self, states: np.ndarray, actions: np.ndarray, returns: np.ndarray) -> None:
-        # TODO: Perform training, using the loss from the REINFORCE with
+        # : Perform training, using the loss from the REINFORCE with
         # baseline algorithm.
         # You should:
         # - compute the predicted baseline using the baseline model
         # - train the baseline model to predict `returns`
         # - train the policy model, using `returns - predicted_baseline` as
         #   the advantage estimate
-        raise NotImplementedError()
+
+        # A) TRAIN BASELINE
+        with tf.GradientTape() as baseline_tape:
+            baseline_predictions = self._baseline_model(states)
+            baseline_loss = tf.losses.MeanSquaredError()(y_true=returns, y_pred=baseline_predictions)
+        self._adam.minimize(loss=baseline_loss, var_list=self._baseline_model.variables, tape=baseline_tape)
+
+        # B) TRAIN MODEL
+        with tf.GradientTape() as policy_tape:
+            policy_predictions = self._policy_model(states)
+            # compute loss with actions as "gold data" and predictions of actions with states as x
+            policy_loss = tf.losses.SparseCategoricalCrossentropy()(y_true=actions, y_pred=policy_predictions,
+                                                                    sample_weight=returns - baseline_predictions)
+        self._adam.minimize(loss=policy_loss, var_list=self._policy_model.variables, tape=policy_tape)
 
     # Predict method, again with manual @tf.function for efficiency.
     @wrappers.typed_np_function(np.float32)
     @tf.function
     def predict(self, states: np.ndarray) -> np.ndarray:
-        return self._model(states)
+        return self._policy_model(states)
 
 
 def main(env: wrappers.EvaluationEnv, args: argparse.Namespace) -> None:
@@ -83,10 +114,12 @@ def main(env: wrappers.EvaluationEnv, args: argparse.Namespace) -> None:
                 if args.render_each and env.episode > 0 and env.episode % args.render_each == 0:
                     env.render()
 
-                # TODO(reinforce): Choose `action` according to probabilities
+                # (reinforce): Choose `action` according to probabilities
                 # distribution (see `np.random.choice`), which you
                 # can compute using `agent.predict` and current `state`.
-                action = None
+                state_expanded = np.expand_dims(state, axis=0)  # Introduction of batch dim necessary to pass it to input layer of self._model
+                predictions = agent.predict(state_expanded)[0]  # index 0 because of added batch dim
+                action = np.random.choice(2, p=predictions)
 
                 next_state, reward, done, _ = env.step(action)
 
@@ -96,18 +129,28 @@ def main(env: wrappers.EvaluationEnv, args: argparse.Namespace) -> None:
 
                 state = next_state
 
-            # TODO(reinforce): Compute returns from the received rewards
+            # (reinforce): Compute returns from the received rewards
+            returns = [sum(rewards[:i]) for i in range(len(rewards))]
 
-            # TODO(reinforce): Add states, actions and returns to the training batch
+            # (reinforce): Add states, actions and returns to the training batch
+            batch_states.extend(states)
+            batch_actions.extend(actions)
+            batch_returns.extend(returns)
 
-        # TODO(reinforce): Train using the generated batch.
+        # (reinforce): Train using the generated batch.
+        agent.train(batch_states, batch_actions, batch_returns)
+
+    print(args)
 
     # Final evaluation
     while True:
         state, done = env.reset(start_evaluation=True), False
         while not done:
-            # TODO(reinforce): Choose greedy action
-            action = None
+            # (reinforce): Choose greedy action
+            state_expanded = np.expand_dims(state,
+                                            axis=0)  # Introduction of batch dim necessary to pass it to input layer of self._model
+            predictions = agent.predict(state_expanded)[0]  # index 0 because of added batch dim
+            action = np.argmax(predictions)
             state, reward, done, _ = env.step(action)
 
 
