@@ -21,8 +21,8 @@ parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # For these and any other arguments you add, ReCodEx will keep your default value.
 parser.add_argument("--batch_size", default=64, type=int, help="Batch size.")
-parser.add_argument("--episodes", default=1000, type=int, help="Training episodes.")
-parser.add_argument("--hidden_layer_size", default=128, type=int, help="Size of hidden layer.")
+parser.add_argument("--episodes", default=2000, type=int, help="Training episodes.")
+parser.add_argument("--hidden_layers", default="256,128", type=str, help="Sizes of hidden layers.")
 parser.add_argument("--learning_rate", default=0.001, type=float, help="Learning rate.")
 
 
@@ -33,11 +33,13 @@ class Agent:
         #
         # Using Adam optimizer with given `args.learning_rate` is a good default.
         model = tf.keras.Sequential()
-        # shape of state: [position of cart, velocity of cart, angle of pole, rotation rate of pole]
         model.add(tf.keras.layers.Input([4]))
-        model.add(tf.keras.layers.Dense(args.hidden_layer_size, activation=tf.nn.relu))
+        for layer_size in args.hidden_layers.split(","):
+            layer_size = int(layer_size)
+            model.add(tf.keras.layers.Dense(layer_size, activation=tf.nn.relu))
         model.add(tf.keras.layers.Dense(2, activation=tf.nn.softmax))
         model.compile()
+        model.summary()
         self._model = model
         self._adam = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
 
