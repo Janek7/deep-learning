@@ -20,9 +20,9 @@ parser.add_argument("--render_each", default=0, type=int, help="Render some epis
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # For these and any other arguments you add, ReCodEx will keep your default value.
-parser.add_argument("--batch_size", default=64, type=int, help="Batch size.")
-parser.add_argument("--episodes", default=2000, type=int, help="Training episodes.")
-parser.add_argument("--hidden_layers", default="256,128", type=str, help="Sizes of hidden layers.")
+parser.add_argument("--batch_size", default=10, type=int, help="Batch size.")
+parser.add_argument("--episodes", default=1000, type=int, help="Training episodes.")
+parser.add_argument("--hidden_layer_size", default=256, type=int, help="Size of hidden layer.")
 parser.add_argument("--learning_rate", default=0.001, type=float, help="Learning rate.")
 
 
@@ -32,16 +32,20 @@ class Agent:
         # it is stored as `self._model`.
         #
         # Using Adam optimizer with given `args.learning_rate` is a good default.
-        model = tf.keras.Sequential()
-        model.add(tf.keras.layers.Input([4]))
-        for layer_size in args.hidden_layers.split(","):
-            layer_size = int(layer_size)
-            model.add(tf.keras.layers.Dense(layer_size, activation=tf.nn.relu))
-        model.add(tf.keras.layers.Dense(2, activation=tf.nn.softmax))
-        model.compile()
-        model.summary()
-        self._model = model
-        self._adam = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
+
+        if not args.recodex:
+            model = tf.keras.Sequential()
+            model.add(tf.keras.layers.Input([4]))
+            model.add(tf.keras.layers.Dense(args.hidden_layer_size, activation=tf.nn.relu))
+            model.add(tf.keras.layers.Dense(2, activation=tf.nn.softmax))
+            model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate),
+                loss=tf.losses.SparseCategoricalCrossentropy()
+            )
+            model.summary()
+            self._model = model
+        else:
+            self._model = tf.keras.models.load_model("reinforce.h5")
 
     # Define a training method.
     #
@@ -61,15 +65,8 @@ class Agent:
         with tf.GradientTape() as tape:
             predictions = self._model(states)
             # compute loss with actions as "gold data" and predictions of actions with states as x
-            loss = tf.losses.SparseCategoricalCrossentropy()(y_true=actions, y_pred=predictions, sample_weight=returns)
-
-        self._adam.minimize(loss=loss, var_list=self._model.variables, tape=tape)
-
-        # (old variant without adam)
-        # variables = self._model.variables
-        # gradients = tape.gradient(loss, variables)
-        # for variable, gradient in zip(variables, gradients):
-            # variable.assign_sub(args.learning_rate * gradient)
+            loss = self._model.compiled_loss(y_true=actions, y_pred=predictions, sample_weight=returns)
+        self._model.optimizer.minimize(loss=loss, var_list=self._model.trainable_variables, tape=tape)
 
     # Predict method, again with manual @tf.function for efficiency.
     @wrappers.typed_np_function(np.float32)
@@ -85,49 +82,49 @@ def main(env: wrappers.EvaluationEnv, args: argparse.Namespace) -> None:
     tf.config.threading.set_inter_op_parallelism_threads(args.threads)
     tf.config.threading.set_intra_op_parallelism_threads(args.threads)
 
-    print(args)
-
     # Construct the agent
     agent = Agent(env, args)
 
-    # Training
-    for _ in range(args.episodes // args.batch_size):
-        batch_states, batch_actions, batch_returns = [], [], []
-        for _ in range(args.batch_size):
-            # Perform episode
-            states, actions, rewards = [], [], []
-            state, done = env.reset(), False
-            while not done:
-                if args.render_each and env.episode > 0 and env.episode % args.render_each == 0:
-                    env.render()
+    if not args.recodex:
+        # Training
+        for _ in range(args.episodes // args.batch_size):
+            batch_states, batch_actions, batch_returns = [], [], []
+            for _ in range(args.batch_size):
+                # Perform episode
+                states, actions, rewards = [], [], []
+                state, done = env.reset(), False
+                while not done:
+                    if args.render_each and env.episode > 0 and env.episode % args.render_each == 0:
+                        env.render()
 
-                # : Choose `action` according to probabilities
-                # distribution (see `np.random.choice`), which you
-                # can compute using `agent.predict` and current `state`.
-                state_expanded = np.expand_dims(state, axis=0)  # Introduction of batch dim necessary to pass it to input layer of self._model
-                predictions = agent.predict(state_expanded)[0]  # index 0 because of added batch dim
-                action = np.random.choice(2, p=predictions)
+                    # : Choose `action` according to probabilities
+                    # distribution (see `np.random.choice`), which you
+                    # can compute using `agent.predict` and current `state`.
+                    state_expanded = np.expand_dims(state, axis=0)  # Introduction of batch dim necessary to pass it to input layer of self._model
+                    predictions = agent.predict(state_expanded)[0]  # index 0 because of added batch dim
+                    action = np.random.choice(2, p=predictions)
 
-                next_state, reward, done, _ = env.step(action)
+                    next_state, reward, done, _ = env.step(action)
 
-                states.append(state)
-                actions.append(action)
-                rewards.append(reward)
+                    states.append(state)
+                    actions.append(action)
+                    rewards.append(reward)
 
-                state = next_state
+                    state = next_state
 
-            # : Compute returns from the received rewards
-            returns = [sum(rewards[:i]) for i in range(len(rewards))]
+                # : Compute returns from the received rewards
+                returns = [sum(rewards[i:]) for i in range(len(rewards))]
 
-            # : Add states, actions and returns to the training batch
-            # important: extend to add all content and not append which appends the whole list as one element
-            batch_states.extend(states)
-            batch_actions.extend(actions)
-            batch_returns.extend(returns)
+                # : Add states, actions and returns to the training batch
+                # important: extend to add all content and not append which appends the whole list as one element
+                batch_states.extend(states)
+                batch_actions.extend(actions)
+                batch_returns.extend(returns)
 
-        # : Train using the generated batch.
-        agent.train(batch_states, batch_actions, batch_returns)
-    print(args)
+            # : Train using the generated batch.
+            agent.train(batch_states, batch_actions, batch_returns)
+
+        agent._model.save("reinforce.h5")
 
     # Final evaluation
     while True:
