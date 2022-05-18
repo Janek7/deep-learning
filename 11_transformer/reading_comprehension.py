@@ -39,6 +39,7 @@ def main(args: argparse.Namespace) -> None:
 
     # Load the data.
     dataset = ReadingComprehensionDataset()
+    exit()
 
     # TODO: Create the model and train it
     model = ...
