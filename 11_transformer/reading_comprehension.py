@@ -25,8 +25,80 @@ parser.add_argument("--threads", default=1, type=int, help="Maximum number of th
 parser.add_argument("--decay", default="None", type=str, help="Learning decay rate type")
 parser.add_argument("--learning_rate", default=2e-5, type=float, help="Initial learning rate.")
 parser.add_argument("--learning_rate_final", default=1e-5, type=float, help="Final learning rate.")
+parser.add_argument("--dropout", default=0, type=float, help="Dropout")
 parser.add_argument("--label_smoothing", default=0.1, type=float, help="Label smoothing.")
 parser.add_argument("--warmup_epochs", default=1, type=float, help="Number of warmup epochs.")
+
+
+class LinearWarmup(tf.optimizers.schedules.LearningRateSchedule):
+    def __init__(self, warmup_steps, following_schedule):
+        self._warmup_steps = warmup_steps
+        self._warmup = tf.optimizers.schedules.PolynomialDecay(0., warmup_steps, following_schedule(0))
+        self._following = following_schedule
+
+    def __call__(self, step):
+        return tf.cond(step < self._warmup_steps,
+                       lambda: self._warmup(step),
+                       lambda: self._following(step - self._warmup_steps))
+
+
+class Model(tf.keras.Model):
+    def __init__(self, args, robeczech, train):
+
+        # A) REGULARIZATION
+        decay_steps = len(train) * args.epochs
+        if not args.decay or args.decay in ["None", "none"]:
+            # constant rate wrapped in callable schedule for warmup steps later
+            learning_rate = tf.keras.optimizers.schedules.PolynomialDecay(decay_steps=decay_steps,
+                                                                          initial_learning_rate=args.learning_rate,
+                                                                          end_learning_rate=args.learning_rate,
+                                                                          power=1.0)
+        else:
+            if args.decay == 'linear':
+                learning_rate = tf.keras.optimizers.schedules.PolynomialDecay(decay_steps=decay_steps,
+                                                                              initial_learning_rate=args.learning_rate,
+                                                                              end_learning_rate=args.learning_rate_final,
+                                                                              power=1.0)
+            elif args.decay == 'exponential':
+                decay_rate = args.learning_rate_final / args.learning_rate
+                learning_rate = tf.optimizers.schedules.ExponentialDecay(decay_steps=decay_steps,
+                                                                         decay_rate=decay_rate,
+                                                                         initial_learning_rate=args.learning_rate)
+            elif args.decay == 'cosine':
+                learning_rate = tf.keras.optimizers.schedules.CosineDecay(decay_steps=decay_steps,
+                                                                          initial_learning_rate=args.learning_rate)
+            else:
+                raise NotImplementedError("Use only 'linear', 'exponential' or 'cosine' as LR scheduler")
+
+        # create warmup
+        warmup_steps = int(len(train) * args.warmup_epochs)  # len(train) -> number of steps in one epoch
+        learning_rate = LinearWarmup(warmup_steps, following_schedule=learning_rate)
+
+        # B) ARCHITECTURE
+        inputs = {
+            "input_ids": tf.keras.layers.Input(shape=[None], dtype=tf.int32, ragged=True),
+            "attention_mask": tf.keras.layers.Input(shape=[None], dtype=tf.int32, ragged=True)
+        }
+
+        robeczech_output = robeczech(input_ids=inputs["input_ids"].to_tensor(),
+                                     attention_mask=inputs["attention_mask"].to_tensor()).last_hidden_state
+        # robeczech_output = robeczech_output[0]
+        robeczech_dropout = tf.keras.layers.Dropout(args.dropout)(robeczech_output)
+
+        answer_start_output = tf.keras.layers.Dense(1)(robeczech_dropout)
+        answer_start_output_softmax = tf.keras.layers.Softmax()(answer_start_output)
+        answer_end_output = tf.keras.layers.Dense(1)(robeczech_dropout)
+        answer_end_output_softmax = tf.keras.layers.Softmax()(answer_end_output)
+        outputs = {"answer_start": answer_start_output_softmax, "answer_end": answer_end_output_softmax}
+
+        super().__init__(inputs=inputs, outputs=outputs)
+
+        # C) COMPILE
+        self.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate),
+                     loss={"answer_start": tf.keras.losses.SparseCategoricalCrossentropy(),
+                           "answer_end": tf.keras.losses.SparseCategoricalCrossentropy()},
+                     metrics=[tf.metrics.SparseCategoricalAccuracy(name="accuracy")])
+        self.summary()
 
 
 def main(args: argparse.Namespace) -> None:
@@ -44,7 +116,7 @@ def main(args: argparse.Namespace) -> None:
 
     # Load the Electra Czech small lowercased
     tokenizer = transformers.AutoTokenizer.from_pretrained("ufal/robeczech-base")
-    # robeczech = transformers.TFAutoModel.from_pretrained("ufal/robeczech-base")
+    robeczech = transformers.TFAutoModel.from_pretrained("ufal/robeczech-base")
 
     # Load the data.
     reading_comprehension_dataset = ReadingComprehensionDataset()
@@ -54,14 +126,15 @@ def main(args: argparse.Namespace) -> None:
         dataset = getattr(reading_comprehension_dataset, name)
 
         # 1) tokenize data
-        context_question_pairs, answer_starts, answer_ends = [], [], []
+        context_question_pair_tokens, context_question_pair_attention_masks, answer_starts, answer_ends = [], [], [], []
         for paragraph in dataset.paragraphs:  # iterate over all paragraphs
             for qa_pair in paragraph["qas"]:  # iterate over all questions in a paragraph
                 encoded_context_question_pair = tokenizer(paragraph["context"], qa_pair["question"], max_length=512,
-                                                          truncation="only_first", padding="max_length")
+                                                          truncation="only_first")
                 # if dataset is test, append only to context_question_pairs, answers are empty
                 if name == 'test':
-                    context_question_pairs.append(encoded_context_question_pair["input_ids"])
+                    context_question_pair_tokens.append(encoded_context_question_pair["input_ids"])
+                    context_question_pair_attention_masks.append(encoded_context_question_pair["attention_mask"])
                 else:
                     for answer in qa_pair["answers"]:  # iterate over all answers of a question
                         # compute answer end index
@@ -81,37 +154,67 @@ def main(args: argparse.Namespace) -> None:
                         # only if computation was successful, append whole triple (fails in 22 cases for train)
                         if answer_end_token_idx is not None:
                             # A) record for every answer the same tokenized context/question
-                            context_question_pairs.append(encoded_context_question_pair["input_ids"])
+                            context_question_pair_tokens.append(encoded_context_question_pair["input_ids"])
+                            context_question_pair_attention_masks.append(encoded_context_question_pair["attention_mask"])
                             # B) record for every answer the respective token IDs of start and end words
                             answer_starts.append(encoded_context_question_pair.char_to_token(answer["start"]))
                             answer_ends.append(answer_end_token_idx)
         # convert lists to tensors
-        context_question_pairs = tf.constant(context_question_pairs)
+        context_question_pair_tokens = tf.ragged.constant(context_question_pair_tokens)
+        context_question_pair_attention_masks = tf.ragged.constant(context_question_pair_attention_masks)
         answer_starts = tf.constant(answer_starts)
         answer_ends = tf.constant(answer_ends)
 
         # 2) create tf.data.DataSet
         if name != 'test':
-            dataset = tf.data.Dataset.from_tensor_slices((context_question_pairs, answer_starts, answer_ends))
-            # combine answer_start and answer_end to one output dict per sample
-            def one_output_map(context_question_pair, answer_start, answer_end):
-                return context_question_pair, {"answer_start": answer_start, "answer_end": answer_end}
-            dataset = dataset.map(one_output_map)
+            dataset = tf.data.Dataset.from_tensor_slices((context_question_pair_tokens,
+                                                          context_question_pair_attention_masks,
+                                                          answer_starts,
+                                                          answer_ends))
+            # combine answer_start/tokens and answer_end/attention_mask to one output/input dict per sample
+            def map(context_question_pair_tokens, context_question_pair_attention_masks, answer_start, answer_end):
+                return {"input_ids": context_question_pair_tokens,
+                        "attention_mask": context_question_pair_attention_masks},\
+                       {"answer_start": answer_start, "answer_end": answer_end}
+            dataset = dataset.map(map)
         else:
-            dataset = tf.data.Dataset.from_tensor_slices((context_question_pairs))
+            dataset = tf.data.Dataset.from_tensor_slices((context_question_pair_tokens,
+                                                          context_question_pair_attention_masks))
+            # combine tokens and attention_mask to one input dict per sample
+            def map(context_question_pair_tokens, context_question_pair_attention_masks):
+                return {"input_ids": context_question_pair_tokens,
+                        "attention_mask": context_question_pair_attention_masks}
+            dataset = dataset.map(map)
+
         if name == "train":
             dataset = dataset.shuffle(buffer_size=10000, seed=args.seed)
+
         print(f"{name} dataset: {len(dataset)}")
-        dataset = dataset.batch(args.batch_size)
+        # dataset = dataset.batch(args.batch_size)
+        dataset = dataset.apply(tf.data.experimental.dense_to_ragged_batch(args.batch_size))
         return dataset
 
     print("create datasets")
-    train = create_dataset("train")
+    # train = create_dataset("train")
     dev = create_dataset("dev")
-    test = create_dataset("test")
+    train = dev # TODO
+    #test = create_dataset("test")
+    # for b in dev:
+    #     print(b)
+    #     break
 
     # TODO: Create the model and train it
-    model = ...
+    model = Model(args, robeczech, train)
+    exit()
+
+    print(args)
+    model.fit(
+        dev, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
+        callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
+                   tf.keras.callbacks.EarlyStopping(monitor='val_accuracy', min_delta=1e-4, patience=100,
+                                                    verbose=0, mode="max", baseline=None, restore_best_weights=True)]
+    )
+    print(args)
 
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
