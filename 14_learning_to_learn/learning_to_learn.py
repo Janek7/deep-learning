@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# TEAM MEMBERS:
+# Antonio Krizmanic - 2b193238-8e3c-11ec-986f-f39926f24a9c
+# Janek Putz - e31a3cae-8e6c-11ec-986f-f39926f24a9c
 import argparse
 import datetime
 import os
@@ -96,10 +99,13 @@ class Model(tf.keras.Model):
             self._cell_size = cell_size
             self._read_heads = read_heads
 
-            # TODO: Create the required layers:
+            # : Create the required layers:
             # - self._controller is a `tf.keras.layers.LSTMCell` with `units` units;
             # - self._parameters is a `tanh`-activated dense layer with `(read_heads + 1) * cell_size` units;
             # - self._output_layer is a `tanh`-activated dense layer with `units` units.
+            self._controller = tf.keras.layers.LSTMCell(units)
+            self._parameters = tf.keras.layers.Dense((read_heads + 1) * cell_size, activation=tf.nn.tanh)
+            self._output_layer = tf.keras.layers.Dense(units, activation=tf.nn.tanh)
 
         @property
         def state_size(self):
@@ -112,25 +118,27 @@ class Model(tf.keras.Model):
             #   in the previous time step;
             # - finally the external memory itself, which is a matrix containing
             #   `self._memory_cells` cells as rows, each of length `self._cell_size`.
-            raise NotImplementedError()
+            return []
 
         def call(self, inputs, states):
-            # TODO: Decompose `states` into `controller_state`, `read_value` and `memory`
+            # : Decompose `states` into `controller_state`, `read_value` and `memory`
             # (see `state_size` describing the `states` structure).
-            controller_state, read_value, memory = ...
+            controller_state, read_value, memory = states  # TODO: check
 
-            # TODO: Call the LSTM controller, using a concatenation of `inputs` and
+            # : Call the LSTM controller, using a concatenation of `inputs` and
             # `read_value` (in this order) as input and `controller_state` as state.
             # Store the results in `controller_output` and `controller_state`.
-            controller_output, controller_state = ...
+            concatenated = tf.keras.layers.Concatenate()([inputs, read_value])
+            controller_output, controller_state = self._controller(inputs=concatenated, states=controller_state)
 
-            # TODO: Pass the `controller_output` through the `self._parameters` layer, obtaining
+            # : Pass the `controller_output` through the `self._parameters` layer, obtaining
             # the parameters for interacting with the external memory (in this order):
             # - `write_value` is the first `self._cell_size` elements of every batch example;
             # - `read_keys` is the rest of the elements of every batch example, reshaped to
             #   `[batch_size, self._read_heads, self._cell_size]`.
-            write_value = ...
-            read_keys = ...
+            hidden = self._parameters(controller_output)
+            write_value = hidden[:, :self._cell_size]
+            read_keys = tf.reshape(hidden[:, self._cell_size:], [args.batch_size, self._read_heads, self._cell_size])
 
             # TODO: Read the memory. For every predicted read key, the goal is to
             # - compute cosine similarities between the key and all memory cells;
@@ -150,19 +158,28 @@ class Model(tf.keras.Model):
             #   obtained distribution. Compute it using a single matrix multiplication, producing
             #   a value with shape `[batch_size, self._read_heads, self._cell_size]`.
             # Finally, reshape the result into `read_value` of shape `[batch_size, self._read_heads * self._cell_size]`
+
+            memory_L2 = tf.math.l2_normalize(memory, axis=1)  # TODO: axis?
+            read_keys_L2 = tf.math.l2_normalize(read_keys, axis=1)  # TODO: axis?
+            self_attention = tf.linalg.matmul(a=memory_L2, b=read_keys_L2, transpose_a=True)
+            softmaxed = tf.nn.softmax(self_attention)
+            # TODO: sum? along which dimension?
+            #  TODO where to use mat mul? for mul with softmaxed distribution?
+
             read_value = ...
 
-            # TODO: Write to the memory by prepending the `write_value` as the first cell (row);
+            # : Write to the memory by prepending the `write_value` as the first cell (row);
             # the last memory cell (row) is dropped.
-            memory = ...
+            memory = tf.concat([write_value, memory[:-1]], axis=0)  # TODO: check with dims of write_value and memory
 
-            # TODO: Generate `output` by concatenating `controller_output` and `read_value`
+            # : Generate `output` by concatenating `controller_output` and `read_value`
             # (in this order) and passing it through the `self._output_layer`.
-            output = ...
+            concatenated = tf.keras.layers.Concatenate()([controller_output, read_value])
+            output = self._output_layer(concatenated)
 
-            # TODO: Return the `output` as output and a suitable combination of
+            # : Return the `output` as output and a suitable combination of
             # `controller_state`, `read_value` and `memory` as state.
-            raise NotImplementedError()
+            return output, (controller_state, read_value, memory)  # TODO: check
 
     def __init__(self, args):
         # Construct the model. The inputs are:
@@ -171,26 +188,36 @@ class Model(tf.keras.Model):
         images = tf.keras.layers.Input([None, Omniglot.H, Omniglot.W, Omniglot.C], dtype=tf.float32)
         previous_labels = tf.keras.layers.Input([None], dtype=tf.int32)
 
-        # TODO: Process each image with the same sequence of the following operations:
+        # : Process each image with the same sequence of the following operations:
         # - convolutional layer with 8 filters, 3x3 kernel, stride 2, valid padding; BatchNorm; ReLU;
         # - convolutional layer with 16 filters, 3x3 kernel, stride 2, valid padding; BatchNorm; ReLU;
         # - convolutional layer with 32 filters, 3x3 kernel, stride 2, valid padding; BatchNorm; ReLU;
         # - finally, flatten each image into a vector.
 
-        # TODO: To create the input for the MemoryAugmentedLSTM, concatenate (in this order)
+        bn_relu = lambda input: tf.keras.layers.ReLU()(tf.keras.layers.BatchNormalization()(input))
+        conv1 = bn_relu(tf.keras.layers.Conv2D(8, 3, 2, "valid")(images))
+        conv2 = bn_relu(tf.keras.layers.Conv2D(16, 3, 2, "valid")(conv1))
+        conv3 = bn_relu(tf.keras.layers.Conv2D(32, 3, 2, "valid")(conv2))
+        flattened = tf.keras.layers.Flatten()(conv3)
+
+        # : To create the input for the MemoryAugmentedLSTM, concatenate (in this order)
         # each computed image representation with the one-hot representation of the
         # label of the previous image from `previous_labels`.
+        concatenated = tf.keras.layers.Concatenate()([flattened, tf.one_hot(previous_labels, depth=args.classes)])
 
-        # TODO: Create the MemoryAugmentedLSTM cell, using
+        # : Create the MemoryAugmentedLSTM cell, using
         # - `args.lstm_dim` units;
         # - `args.classes * args.images_per_class` memory cells of size `args.cell_size`;
         # - `args.read_heads` read heads.
         # Then, run this cell using `tf.keras.layers.RNN` on the prepared input,
         # obtaining output for every input sequence element.
+        cell = Model.MemoryAugmentedLSTM(units=args.lstm_dim, memory_cells=args.classes * args.images_per_class,
+                                         cell_size=args.cell_size, read_heads=args.read_heads)
+        rnn_output = tf.keras.layers.RNN(cell, return_sequences=True)(concatenated)
 
-        # TODO: Pass the sequence of outputs through a classification dense layer
+        # : Pass the sequence of outputs through a classification dense layer
         # with `args.classes` units and `tf.nn.softmax` activation.
-        predictions = ...
+        predictions = tf.keras.layers.Dense(args.classes, activation=tf.nn.softmax)(rnn_output)
 
         # Create the model and compile it.
         super().__init__(inputs=[images, previous_labels], outputs=predictions)
