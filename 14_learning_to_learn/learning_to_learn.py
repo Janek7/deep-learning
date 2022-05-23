@@ -109,7 +109,7 @@ class Model(tf.keras.Model):
 
         @property
         def state_size(self):
-            # TODO: Return the description of the state size as a list containing
+            # : Return the description of the state size as a list containing
             # sizes of individual state tensors. The state is a list consisting
             # of the following elements (in this order):
             # - first the state tensors of the `self._controller` itself; note that
@@ -140,7 +140,7 @@ class Model(tf.keras.Model):
             #   `[batch_size, self._read_heads, self._cell_size]`.
             hidden = self._parameters(controller_output)
             write_value = hidden[:, :self._cell_size]
-            read_keys = tf.reshape(hidden[:, self._cell_size:], [args.batch_size, self._read_heads, self._cell_size])
+            read_keys = tf.reshape(hidden[:, self._cell_size:], [-1, self._read_heads, self._cell_size])
 
             # : Read the memory. For every predicted read key, the goal is to
             # - compute cosine similarities between the key and all memory cells;
