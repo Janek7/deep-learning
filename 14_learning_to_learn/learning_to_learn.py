@@ -26,7 +26,7 @@ parser.add_argument("--recodex", default=False, action="store_true", help="Evalu
 parser.add_argument("--read_heads", default=1, type=int, help="Read heads.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--test_episodes", default=1000, type=int, help="Number of testing episodes.")
-parser.add_argument("--threads", default=0, type=int, help="Maximum number of threads to use.")
+parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 parser.add_argument("--train_episodes", default=10000, type=int, help="Number of training episodes.")
 # If you add more arguments, ReCodEx will keep them with your default values.
 
@@ -118,12 +118,14 @@ class Model(tf.keras.Model):
             #   in the previous time step;
             # - finally the external memory itself, which is a matrix containing
             #   `self._memory_cells` cells as rows, each of length `self._cell_size`.
-            return []
+            return [self._controller.state_size,
+                    self._read_heads * self._cell_size,
+                    tf.TensorShape([self._memory_cells, self._cell_size])]
 
         def call(self, inputs, states):
             # : Decompose `states` into `controller_state`, `read_value` and `memory`
             # (see `state_size` describing the `states` structure).
-            controller_state, read_value, memory = states  # TODO: check
+            controller_state, read_value, memory = states
 
             # : Call the LSTM controller, using a concatenation of `inputs` and
             # `read_value` (in this order) as input and `controller_state` as state.
@@ -140,7 +142,7 @@ class Model(tf.keras.Model):
             write_value = hidden[:, :self._cell_size]
             read_keys = tf.reshape(hidden[:, self._cell_size:], [args.batch_size, self._read_heads, self._cell_size])
 
-            # TODO: Read the memory. For every predicted read key, the goal is to
+            # : Read the memory. For every predicted read key, the goal is to
             # - compute cosine similarities between the key and all memory cells;
             # - compute cell distribution as a softmax of the computed cosine similarities;
             # - the read value is the sum of the memory cells weighted by the above distribution.
@@ -159,18 +161,16 @@ class Model(tf.keras.Model):
             #   a value with shape `[batch_size, self._read_heads, self._cell_size]`.
             # Finally, reshape the result into `read_value` of shape `[batch_size, self._read_heads * self._cell_size]`
 
-            memory_L2 = tf.math.l2_normalize(memory, axis=1)  # TODO: axis?
-            read_keys_L2 = tf.math.l2_normalize(read_keys, axis=1)  # TODO: axis?
-            self_attention = tf.linalg.matmul(a=memory_L2, b=read_keys_L2, transpose_a=True)
+            memory_L2 = tf.math.l2_normalize(memory, axis=2)
+            read_keys_L2 = tf.math.l2_normalize(read_keys, axis=2)
+            self_attention = tf.linalg.matmul(a=read_keys_L2, b=memory_L2, transpose_b=True)
             softmaxed = tf.nn.softmax(self_attention)
-            # TODO: sum? along which dimension?
-            #  TODO where to use mat mul? for mul with softmaxed distribution?
-
-            read_value = ...
+            weighted_sum = softmaxed @ memory
+            read_value = tf.reshape(weighted_sum, [-1, self._read_heads * self._cell_size])
 
             # : Write to the memory by prepending the `write_value` as the first cell (row);
             # the last memory cell (row) is dropped.
-            memory = tf.concat([write_value, memory[:-1]], axis=0)  # TODO: check with dims of write_value and memory
+            memory = tf.concat([write_value[:, tf.newaxis], memory[:, :-1]], axis=1)
 
             # : Generate `output` by concatenating `controller_output` and `read_value`
             # (in this order) and passing it through the `self._output_layer`.
@@ -179,7 +179,7 @@ class Model(tf.keras.Model):
 
             # : Return the `output` as output and a suitable combination of
             # `controller_state`, `read_value` and `memory` as state.
-            return output, (controller_state, read_value, memory)  # TODO: check
+            return output, (controller_state, read_value, memory)
 
     def __init__(self, args):
         # Construct the model. The inputs are:
@@ -198,7 +198,8 @@ class Model(tf.keras.Model):
         conv1 = bn_relu(tf.keras.layers.Conv2D(8, 3, 2, "valid")(images))
         conv2 = bn_relu(tf.keras.layers.Conv2D(16, 3, 2, "valid")(conv1))
         conv3 = bn_relu(tf.keras.layers.Conv2D(32, 3, 2, "valid")(conv2))
-        flattened = tf.keras.layers.Flatten()(conv3)
+        # reshape to sequence of images, multiplication of w*h*c
+        flattened = tf.keras.layers.Reshape([-1, np.prod(conv3.shape[-3:])])(conv3)
 
         # : To create the input for the MemoryAugmentedLSTM, concatenate (in this order)
         # each computed image representation with the one-hot representation of the
