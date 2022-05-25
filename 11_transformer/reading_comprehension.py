@@ -6,6 +6,8 @@ import argparse
 import datetime
 import os
 import re
+from typing import List
+
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # Report only TF errors by default
 
 import numpy as np
@@ -82,12 +84,13 @@ class Model(tf.keras.Model):
 
         robeczech_output = robeczech(input_ids=inputs["input_ids"].to_tensor(),
                                      attention_mask=inputs["attention_mask"].to_tensor()).last_hidden_state
-        # robeczech_output = robeczech_output[0]
         robeczech_dropout = tf.keras.layers.Dropout(args.dropout)(robeczech_output)
 
-        answer_start_output = tf.keras.layers.Dense(1)(robeczech_dropout)
+        # [:, :, 0] removes the 3rd dimension and pulls the value in the second dimension (alternative to reshape)
+        # alternative: [..., 0] -> ... is placeholder for arbitrary number of dimensions
+        answer_start_output = tf.keras.layers.Dense(1)(robeczech_dropout)[:, :, 0]
         answer_start_output_softmax = tf.keras.layers.Softmax()(answer_start_output)
-        answer_end_output = tf.keras.layers.Dense(1)(robeczech_dropout)
+        answer_end_output = tf.keras.layers.Dense(1)(robeczech_dropout)[:, :, 0]
         answer_end_output_softmax = tf.keras.layers.Softmax()(answer_end_output)
         outputs = {"answer_start": answer_start_output_softmax, "answer_end": answer_end_output_softmax}
 
@@ -97,7 +100,10 @@ class Model(tf.keras.Model):
         self.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate),
                      loss={"answer_start": tf.keras.losses.SparseCategoricalCrossentropy(),
                            "answer_end": tf.keras.losses.SparseCategoricalCrossentropy()},
-                     metrics=[tf.metrics.SparseCategoricalAccuracy(name="accuracy")])
+                     metrics={
+                         "answer_start": [tf.metrics.SparseCategoricalAccuracy(name="accuracy_start")],
+                         "answer_end": [tf.metrics.SparseCategoricalAccuracy(name="accuracy_end")]
+                     })
         self.summary()
 
 
@@ -120,13 +126,19 @@ def main(args: argparse.Namespace) -> None:
 
     # Load the data.
     reading_comprehension_dataset = ReadingComprehensionDataset()
-    debug = False
 
-    def create_dataset(name) -> tf.data.Dataset:
+    def create_dataset(name) -> (tf.data.Dataset, List[transformers.BatchEncoding], List[str]):
+        # returns a tf.data.Dataset. In case of 'test', return additionaly list of BatchEncodings of context, question
+        # pairs and list of original raw string contexts
+        #
+        # Note: to improve it, before adding triples to result, check if computed answer end token index is in the
+        # range of the paragraph/context in the tokenized pair of context and question (otherwise we would point in the
+        # question -> train with false examples)
         dataset = getattr(reading_comprehension_dataset, name)
 
         # 1) tokenize data
         context_question_pair_tokens, context_question_pair_attention_masks, answer_starts, answer_ends = [], [], [], []
+        encoded_context_question_pairs, contexts_raw = [], []
         for paragraph in dataset.paragraphs:  # iterate over all paragraphs
             for qa_pair in paragraph["qas"]:  # iterate over all questions in a paragraph
                 encoded_context_question_pair = tokenizer(paragraph["context"], qa_pair["question"], max_length=512,
@@ -135,30 +147,24 @@ def main(args: argparse.Namespace) -> None:
                 if name == 'test':
                     context_question_pair_tokens.append(encoded_context_question_pair["input_ids"])
                     context_question_pair_attention_masks.append(encoded_context_question_pair["attention_mask"])
+                    # record raw and tokenized contexts for inference
+                    contexts_raw.append(paragraph["context"])
+                    encoded_context_question_pairs.append(encoded_context_question_pair)
                 else:
                     for answer in qa_pair["answers"]:  # iterate over all answers of a question
                         # compute answer end index
-                        last_answer_word = answer["text"].split(" ")[-1]
-                        answer_end_idx = paragraph["context"][answer["start"]:].find(last_answer_word)
-                        answer_end_idx += answer["start"]
-                        answer_end_token_idx = encoded_context_question_pair.char_to_token(answer["start"])
-                        if debug:
-                            print(paragraph["context"])
-                            print(encoded_context_question_pair["input_ids"])
-                            print(answer["text"], tokenizer(answer["text"])["input_ids"])
-                            print("start idx", answer["start"], "token:", encoded_context_question_pair.char_to_token(answer["start"]))
-                            print(last_answer_word)
-                            print("end idx", answer_end_idx, "token:", encoded_context_question_pair.char_to_token(answer_end_idx))
-                            print("-------------")
-
+                        answer_end_token_idx = encoded_context_question_pair.char_to_token(
+                            answer["start"] + len(answer["text"]) - 1)
                         # only if computation was successful, append whole triple (fails in 22 cases for train)
                         if answer_end_token_idx is not None:
                             # A) record for every answer the same tokenized context/question
                             context_question_pair_tokens.append(encoded_context_question_pair["input_ids"])
-                            context_question_pair_attention_masks.append(encoded_context_question_pair["attention_mask"])
+                            context_question_pair_attention_masks.append(
+                                encoded_context_question_pair["attention_mask"])
                             # B) record for every answer the respective token IDs of start and end words
                             answer_starts.append(encoded_context_question_pair.char_to_token(answer["start"]))
                             answer_ends.append(answer_end_token_idx)
+
         # convert lists to tensors
         context_question_pair_tokens = tf.ragged.constant(context_question_pair_tokens)
         context_question_pair_attention_masks = tf.ragged.constant(context_question_pair_attention_masks)
@@ -174,7 +180,7 @@ def main(args: argparse.Namespace) -> None:
             # combine answer_start/tokens and answer_end/attention_mask to one output/input dict per sample
             def map(context_question_pair_tokens, context_question_pair_attention_masks, answer_start, answer_end):
                 return {"input_ids": context_question_pair_tokens,
-                        "attention_mask": context_question_pair_attention_masks},\
+                        "attention_mask": context_question_pair_attention_masks}, \
                        {"answer_start": answer_start, "answer_end": answer_end}
             dataset = dataset.map(map)
         else:
@@ -190,26 +196,20 @@ def main(args: argparse.Namespace) -> None:
             dataset = dataset.shuffle(buffer_size=10000, seed=args.seed)
 
         print(f"{name} dataset: {len(dataset)}")
-        # dataset = dataset.batch(args.batch_size)
         dataset = dataset.apply(tf.data.experimental.dense_to_ragged_batch(args.batch_size))
-        return dataset
+        return dataset, encoded_context_question_pairs, contexts_raw
 
     print("create datasets")
-    # train = create_dataset("train")
-    dev = create_dataset("dev")
-    train = dev # TODO
-    #test = create_dataset("test")
-    # for b in dev:
-    #     print(b)
-    #     break
+    train, _, _ = create_dataset("train")
+    dev, _, _ = create_dataset("dev")
+    test, test_contexts_tokenized, test_contexts = create_dataset("test")
 
-    # TODO: Create the model and train it
+    # : Create the model and train it
     model = Model(args, robeczech, train)
-    exit()
 
     print(args)
     model.fit(
-        dev, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
+        train, batch_size=args.batch_size, epochs=args.epochs, validation_data=dev,
         callbacks=[tf.keras.callbacks.TensorBoard(args.logdir, histogram_freq=1, update_freq=100, profile_batch=0),
                    tf.keras.callbacks.EarlyStopping(monitor='val_accuracy', min_delta=1e-4, patience=100,
                                                     verbose=0, mode="max", baseline=None, restore_best_weights=True)]
@@ -219,11 +219,26 @@ def main(args: argparse.Namespace) -> None:
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
     with open(os.path.join(args.logdir, "reading_comprehension.txt"), "w", encoding="utf-8") as predictions_file:
-        # TODO: Predict the answers as strings, one per line.
-        predictions = ...
+        # : Predict the answers as strings, one per line.
+        n = 0
+        for test_batch in test:  # predict simple batches because of different max lengths in batches
+            predictions = model.predict(test_batch)
+            predictions_starts = predictions["answer_start"]
+            predictions_ends = predictions["answer_end"]
 
-        for answer in predictions:
-            print(answer, file=predictions_file)
+            for batch_sample_i in range(len(predictions_ends)):
+                start_token_idx = tf.argmax(predictions_starts[batch_sample_i]).numpy()
+                # [start_token_idx:] is necessary to not retrieve smaller indices for end than for start token
+                end_token_idx = start_token_idx + tf.argmax(predictions_ends[batch_sample_i][start_token_idx:]).numpy()
+                # print(start_token_idx, end_token_idx)
+                try:
+                    answer = test_contexts[n][test_contexts_tokenized[n].token_to_chars(start_token_idx).start:
+                                              test_contexts_tokenized[n].token_to_chars(end_token_idx - 1).end]
+                except Exception as ex:
+                    print(ex)
+                    answer = "answer lookup failed"  # dummy answer
+                n += 1
+                print(answer, file=predictions_file)
 
 
 if __name__ == "__main__":
