@@ -89,9 +89,9 @@ class Model(tf.keras.Model):
         # [:, :, 0] removes the 3rd dimension and pulls the value in the second dimension (alternative to reshape)
         # alternative: [..., 0] -> ... is placeholder for arbitrary number of dimensions
         answer_start_output = tf.keras.layers.Dense(1)(robeczech_dropout)[:, :, 0]
-        answer_start_output_softmax = tf.keras.layers.Softmax()(answer_start_output)
+        answer_start_output_softmax = tf.keras.layers.Softmax(name="answer_start")(answer_start_output)
         answer_end_output = tf.keras.layers.Dense(1)(robeczech_dropout)[:, :, 0]
-        answer_end_output_softmax = tf.keras.layers.Softmax()(answer_end_output)
+        answer_end_output_softmax = tf.keras.layers.Softmax(name="answer_end")(answer_end_output)
         outputs = {"answer_start": answer_start_output_softmax, "answer_end": answer_end_output_softmax}
 
         super().__init__(inputs=inputs, outputs=outputs)
